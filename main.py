@@ -6,10 +6,6 @@ from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    uvicorn.run(app, host="0.0.0.0", port=port)
-
 load_dotenv()
 
 app = FastAPI()
@@ -51,3 +47,8 @@ def falar(texto: str):
         iter([response.content]),
         media_type="audio/mpeg"
     )
+
+# opcional (não é obrigatório no Railway)
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
+    uvicorn.run(app, host="0.0.0.0", port=port)
