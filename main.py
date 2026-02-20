@@ -4,6 +4,11 @@ from fastapi import FastAPI
 from dotenv import load_dotenv
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
+    uvicorn.run(app, host="0.0.0.0", port=port)
 
 load_dotenv()
 
