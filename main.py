@@ -3,10 +3,19 @@ import requests
 from fastapi import FastAPI
 from dotenv import load_dotenv
 from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 
