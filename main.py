@@ -1,56 +1,36 @@
-import os
-import requests
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI
+from pydantic import BaseModel
+from fastapi.responses import JSONResponse
+import base64
+from gtts import gTTS
+import io
 
 app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
-
+class AudioRequest(BaseModel):
+    texto: str
 
 @app.get("/")
 def root():
-    return {"status": "ok"}
+    return {"status": "API rodando"}
 
+@app.post("/generate")
+async def generate_audio(request: AudioRequest):
+    try:
+        texto = request.texto
 
-@app.get("/falar")
-def falar(texto: str):
-    if not ELEVENLABS_API_KEY:
-        raise HTTPException(status_code=500, detail="API KEY não encontrada")
+        # Gerar áudio
+        tts = gTTS(text=texto, lang="pt-br")
+        audio_buffer = io.BytesIO()
+        tts.write_to_fp(audio_buffer)
+        audio_buffer.seek(0)
 
-    url = "https://api.elevenlabs.io/v1/text-to-speech/EXAVITQu4vr4xnSDxMaL"
+        # Converter para base64
+        audio_base64 = base64.b64encode(audio_buffer.read()).decode("utf-8")
 
-    headers = {
-        "xi-api-key": ELEVENLABS_API_KEY,
-        "Content-Type": "application/json"
-    }
+        return JSONResponse({
+            "audio": audio_base64
+        })
 
-    data = {
-        "text": texto,
-        "voice_settings": {
-            "stability": 0.5,
-            "similarity_boost": 0.5
-        }
-    }
-
-    response = requests.post(url, json=data, headers=headers)
-
-    if response.status_code != 200:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Erro ElevenLabs: {response.text}"
-        )
-
-    return StreamingResponse(
-        iter([response.content]),
-        media_type="audio/mpeg"
-    )
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
