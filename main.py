@@ -2,16 +2,15 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+import requests
 import base64
-from gtts import gTTS
-import io
+import os
 
 app = FastAPI()
 
-# ✅ ATIVAR CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # depois podemos restringir
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -19,20 +18,36 @@ app.add_middleware(
 
 class AudioRequest(BaseModel):
     texto: str
+    voz: str | None = None
 
-@app.get("/")
-def root():
-    return {"status": "API rodando"}
+ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY")
 
 @app.post("/generate")
 async def generate_audio(request: AudioRequest):
     try:
-        tts = gTTS(text=request.texto, lang="pt-br")
-        audio_buffer = io.BytesIO()
-        tts.write_to_fp(audio_buffer)
-        audio_buffer.seek(0)
+        texto = request.texto
+        
+        # ID de voz padrão (você pode trocar depois)
+        voice_id = "21m00Tcm4TlvDq8ikWAM"  # Rachel (exemplo)
 
-        audio_base64 = base64.b64encode(audio_buffer.read()).decode("utf-8")
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+
+        headers = {
+            "xi-api-key": ELEVEN_API_KEY,
+            "Content-Type": "application/json"
+        }
+
+        data = {
+            "text": texto,
+            "model_id": "eleven_multilingual_v2"
+        }
+
+        response = requests.post(url, json=data, headers=headers)
+
+        if response.status_code != 200:
+            return JSONResponse(status_code=500, content={"error": response.text})
+
+        audio_base64 = base64.b64encode(response.content).decode("utf-8")
 
         return {"audio": audio_base64}
 
