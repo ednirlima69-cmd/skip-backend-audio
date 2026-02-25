@@ -8,6 +8,10 @@ import os
 
 app = FastAPI()
 
+@app.get("/")
+def home():
+    return {"status": "API ElevenLabs rodando 🚀"}
+    
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -53,3 +57,4 @@ async def generate_audio(request: AudioRequest):
 
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
