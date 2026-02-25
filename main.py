@@ -5,14 +5,18 @@ from fastapi.middleware.cors import CORSMiddleware
 import requests
 import base64
 import os
+import re
 from typing import Optional
+from num2words import num2words
 
 app = FastAPI()
 
+# ✅ Rota raiz para healthcheck do Railway
 @app.get("/")
 def home():
     return {"status": "API ElevenLabs rodando 🚀"}
 
+# ✅ CORS liberado
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -27,12 +31,31 @@ class AudioRequest(BaseModel):
 
 ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY")
 
+# 🔥 Função para converter valores monetários automaticamente
+def converter_valores_para_extenso(texto):
+    padrao = r'R?\$?\s*(\d+),(\d{2})'
+
+    def substituir(match):
+        reais = int(match.group(1))
+        centavos = int(match.group(2))
+
+        texto_reais = num2words(reais, lang='pt_BR')
+        texto_centavos = num2words(centavos, lang='pt_BR')
+
+        if centavos == 0:
+            return f"{texto_reais} reais"
+        else:
+            return f"{texto_reais} reais e {texto_centavos} centavos"
+
+    return re.sub(padrao, substituir, texto)
+
 @app.post("/generate")
 async def generate_audio(request: AudioRequest):
     try:
-        texto = request.texto
+        # 🔥 Converte valores automaticamente
+        texto_tratado = converter_valores_para_extenso(request.texto)
 
-        # 🔥 Mapeamento de vozes
+        # 🔥 Mapeamento de tons para vozes
         VOICE_MAP = {
             "promocional": "Qrdut83w0Cr152Yb4Xn3",
             "institucional": "ZqE9vIHPcrC35dZv0Svu",
@@ -50,7 +73,7 @@ async def generate_audio(request: AudioRequest):
         }
 
         data = {
-            "text": texto,
+            "text": texto_tratado,
             "model_id": "eleven_multilingual_v2"
         }
 
@@ -65,4 +88,3 @@ async def generate_audio(request: AudioRequest):
 
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
-
