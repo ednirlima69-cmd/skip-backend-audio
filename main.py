@@ -110,3 +110,4 @@ def gerar_audio(request: TextoRequest):
             "Content-Disposition": "inline; filename=audio.mp3"
         }
     )
+
