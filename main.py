@@ -24,7 +24,7 @@ class AudioRequest(BaseModel):
     texto: str
     voz: str | None = None
 
-ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY")
+ELEVEN_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 
 @app.post("/generate")
 async def generate_audio(request: AudioRequest):
@@ -57,4 +57,5 @@ async def generate_audio(request: AudioRequest):
 
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
 
