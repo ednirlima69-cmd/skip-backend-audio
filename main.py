@@ -34,10 +34,10 @@ async def generate_audio(request: AudioRequest):
 
         # 🔥 Mapeamento de vozes
         VOICE_MAP = {
-            "promocional": "COLOQUE_ID_1",
-            "institucional": "COLOQUE_ID_2",
-            "calmo": "COLOQUE_ID_3",
-            "entusiasta": "COLOQUE_ID_4"
+            "promocional": "Qrdut83w0Cr152Yb4Xn3",
+            "institucional": "ZqE9vIHPcrC35dZv0Svu",
+            "calmo": "ORgG8rwdAiMYRug8RJwR",
+            "entusiasta": "MZxV5lN3cv7hi1376O0m"
         }
 
         voice_id = VOICE_MAP.get(request.tom, "COLOQUE_ID_1")
@@ -65,3 +65,4 @@ async def generate_audio(request: AudioRequest):
 
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
