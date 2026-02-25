@@ -5,13 +5,14 @@ from fastapi.middleware.cors import CORSMiddleware
 import requests
 import base64
 import os
+from typing import Optional
 
 app = FastAPI()
 
 @app.get("/")
 def home():
     return {"status": "API ElevenLabs rodando 🚀"}
-    
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,7 +23,7 @@ app.add_middleware(
 
 class AudioRequest(BaseModel):
     texto: str
-    voz: str | None = None
+    tom: Optional[str] = "promocional"
 
 ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY")
 
@@ -30,9 +31,16 @@ ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY")
 async def generate_audio(request: AudioRequest):
     try:
         texto = request.texto
-        
-        # ID de voz padrão (você pode trocar depois)
-        voice_id = "21m00Tcm4TlvDq8ikWAM"  # Rachel (exemplo)
+
+        # 🔥 Mapeamento de vozes
+        VOICE_MAP = {
+            "promocional": "COLOQUE_ID_1",
+            "institucional": "COLOQUE_ID_2",
+            "calmo": "COLOQUE_ID_3",
+            "entusiasta": "COLOQUE_ID_4"
+        }
+
+        voice_id = VOICE_MAP.get(request.tom, "COLOQUE_ID_1")
 
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 
@@ -57,6 +65,3 @@ async def generate_audio(request: AudioRequest):
 
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
-
-
-
