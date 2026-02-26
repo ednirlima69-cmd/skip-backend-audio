@@ -40,11 +40,10 @@ if not ELEVEN_API_KEY:
 
 # ⚠️ COLOQUE AQUI OS IDs REAIS DA SUA CONTA
 VOICES = {
-    "promocional": "EXAVITQu4vr4xnSDxMaL",
-    "institucional": "EXAVITQu4vr4xnSDxMaL",
-    "calmo": "EXAVITQu4vr4xnSDxMaL",
-    "entusiasta": "EXAVITQu4vr4xnSDxMaL",
-    "neutro": "EXAVITQu4vr4xnSDxMaL"
+    "promocional": "Qrdut83w0Cr152Yb4Xn3",
+    "institucional": "ZqE9vIHPcrC35dZv0Svu",
+    "calmo": "ORgG8rwdAiMYRug8RJwR",
+    "entusiasta": "MZxV5lN3cv7hi1376O0m"
 }
 
 # =========================
@@ -135,3 +134,4 @@ def listar_vozes():
         raise HTTPException(status_code=500, detail=response.text)
 
     return response.json()
+
