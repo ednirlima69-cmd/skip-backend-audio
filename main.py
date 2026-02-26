@@ -43,9 +43,9 @@ VOICES = {
     "promocional": "ZqE9vIHPcrC35dZv0Svu",
     "institucional": "Qrdut83w0Cr152Yb4Xn3",
     "calmo": "ORgG8rwdAiMYRug8RJwR",
-    "entusiasta": "MZxV5lN3cv7hi1376O0m"
+    "entusiasta": "MZxV5lN3cv7hi1376O0m",
+    "neutro": "ZqE9vIHPcrC35dZv0Svu"  # voz padrão
 }
-
 # =========================
 # 🎵 MODELO
 # =========================
@@ -60,8 +60,8 @@ class AudioRequest(BaseModel):
 
 def gerar_audio_real(texto: str, tom: str):
 
-    voice_id = VOICES.get(tom, VOICES["neutro"])
-
+    voice_id = VOICES.get(tom) or VOICES["neutro"]
+    
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 
     headers = {
@@ -134,5 +134,6 @@ def listar_vozes():
         raise HTTPException(status_code=500, detail=response.text)
 
     return response.json()
+
 
 
