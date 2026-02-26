@@ -6,6 +6,8 @@ from typing import Optional
 import requests
 import os
 import io
+import re
+from num2words import num2words
 
 app = FastAPI()
 
@@ -38,14 +40,14 @@ ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY")
 if not ELEVEN_API_KEY:
     raise Exception("ELEVEN_API_KEY não configurada")
 
-# ⚠️ COLOQUE AQUI OS IDs REAIS DA SUA CONTA
 VOICES = {
     "promocional": "ZqE9vIHPcrC35dZv0Svu",
     "institucional": "Qrdut83w0Cr152Yb4Xn3",
     "calmo": "ORgG8rwdAiMYRug8RJwR",
     "entusiasta": "MZxV5lN3cv7hi1376O0m",
-    "neutro": "ZqE9vIHPcrC35dZv0Svu"  # voz padrão
+    "neutro": "ZqE9vIHPcrC35dZv0Svu"
 }
+
 # =========================
 # 🎵 MODELO
 # =========================
@@ -55,10 +57,33 @@ class AudioRequest(BaseModel):
     tom: Optional[str] = "neutro"
 
 # =========================
+# 💰 NORMALIZAÇÃO DE MOEDA
+# =========================
+
+def normalizar_moeda(texto: str):
+
+    padrao = r'R?\$?\s?(\d+),(\d{2})'
+
+    def substituir(match):
+        reais = int(match.group(1))
+        centavos = int(match.group(2))
+
+        texto_reais = num2words(reais, lang='pt_BR')
+        texto_centavos = num2words(centavos, lang='pt_BR')
+
+        return f"{texto_reais} reais e {texto_centavos} centavos"
+
+    texto = re.sub(padrao, substituir, texto)
+
+    return texto
+
+# =========================
 # 🔊 FUNÇÃO REAL ELEVENLABS
 # =========================
 
 def gerar_audio_real(texto: str, tom: str):
+
+    texto = normalizar_moeda(texto)
 
     voice_id = VOICES.get(tom) or VOICES["neutro"]
 
@@ -86,7 +111,7 @@ def gerar_audio_real(texto: str, tom: str):
     return io.BytesIO(response.content)
 
 # =========================
-# 🔎 PREVIEW (NÃO CONSOME)
+# 🔎 PREVIEW
 # =========================
 
 @app.post("/audio/preview")
@@ -103,7 +128,7 @@ def preview_audio(request: AudioRequest, authorization: str = Header(None)):
     )
 
 # =========================
-# 🎙️ GENERATE (CONSUME)
+# 🎙️ GENERATE
 # =========================
 
 @app.post("/audio/generate")
@@ -120,7 +145,7 @@ def generate_audio(request: AudioRequest, authorization: str = Header(None)):
     )
 
 # =========================
-# 🎤 LISTAR VOZES DA SUA CONTA
+# 🎤 LISTAR VOZES
 # =========================
 
 @app.get("/voices")
@@ -138,7 +163,3 @@ def listar_vozes():
         raise HTTPException(status_code=500, detail=response.text)
 
     return response.json()
-
-
-
-
