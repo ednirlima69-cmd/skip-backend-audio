@@ -34,7 +34,18 @@ def root():
 # =========================
 
 ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY")
-VOICE_ID = "EXAVITQu4vr4xnSDxMaL"  # voz padrão
+
+if not ELEVEN_API_KEY:
+    raise Exception("ELEVEN_API_KEY não configurada")
+
+# ⚠️ COLOQUE AQUI OS IDs REAIS DA SUA CONTA
+VOICES = {
+    "promocional": "EXAVITQu4vr4xnSDxMaL",
+    "institucional": "EXAVITQu4vr4xnSDxMaL",
+    "calmo": "EXAVITQu4vr4xnSDxMaL",
+    "entusiasta": "EXAVITQu4vr4xnSDxMaL",
+    "neutro": "EXAVITQu4vr4xnSDxMaL"
+}
 
 # =========================
 # 🎵 MODELO
@@ -48,8 +59,11 @@ class AudioRequest(BaseModel):
 # 🔊 FUNÇÃO REAL ELEVENLABS
 # =========================
 
-def gerar_audio_real(texto: str):
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}"
+def gerar_audio_real(texto: str, tom: str):
+
+    voice_id = VOICES.get(tom, VOICES["neutro"])
+
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 
     headers = {
         "xi-api-key": ELEVEN_API_KEY,
@@ -64,7 +78,7 @@ def gerar_audio_real(texto: str):
     response = requests.post(url, json=data, headers=headers)
 
     if response.status_code != 200:
-        raise HTTPException(status_code=500, detail="Erro ao gerar áudio")
+        raise HTTPException(status_code=500, detail=response.text)
 
     return io.BytesIO(response.content)
 
@@ -78,7 +92,7 @@ def preview_audio(request: AudioRequest, authorization: str = Header(None)):
     if not authorization:
         raise HTTPException(status_code=401, detail="Token não enviado")
 
-    audio_stream = gerar_audio_real(request.texto)
+    audio_stream = gerar_audio_real(request.texto, request.tom)
 
     return StreamingResponse(
         audio_stream,
@@ -95,9 +109,29 @@ def generate_audio(request: AudioRequest, authorization: str = Header(None)):
     if not authorization:
         raise HTTPException(status_code=401, detail="Token não enviado")
 
-    audio_stream = gerar_audio_real(request.texto)
+    audio_stream = gerar_audio_real(request.texto, request.tom)
 
     return StreamingResponse(
         audio_stream,
         media_type="audio/mpeg"
     )
+
+# =========================
+# 🎤 LISTAR VOZES DA SUA CONTA
+# =========================
+
+@app.get("/voices")
+def listar_vozes():
+
+    url = "https://api.elevenlabs.io/v1/voices"
+
+    headers = {
+        "xi-api-key": ELEVEN_API_KEY
+    }
+
+    response = requests.get(url, headers=headers)
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=500, detail=response.text)
+
+    return response.json()
