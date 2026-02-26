@@ -1,10 +1,23 @@
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 import io
 
 app = FastAPI()
+
+# =========================
+# ✅ CORS (LIBERA SKIP)
+# =========================
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # em produção depois restringimos
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # =========================
 # ✅ HEALTHCHECK RAILWAY
