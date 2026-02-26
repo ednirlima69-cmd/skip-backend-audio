@@ -1,113 +1,103 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import Response
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, HTTPException, Header
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-import requests
-import os
-import re
+from typing import Optional
+import io
 
 app = FastAPI()
 
-# ==============================
-# 🔐 CORS (LIBERA FRONTEND)
-# ==============================
+# =========================
+# 🔐 USUÁRIOS MOCK
+# =========================
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # depois podemos restringir só ao domínio do SKIP
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ==============================
-# 🔑 CHAVE ELEVENLABS
-# ==============================
-
-ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
-
-if not ELEVENLABS_API_KEY:
-    raise RuntimeError("ELEVENLABS_API_KEY não configurada no Railway")
-
-# ==============================
-# 🎙️ VOZES CONFIGURADAS
-# ==============================
-
-VOICES = {
-    "promocional": "Qrdut83w0Cr152Yb4Xn3",
-    "institucional": "ZqE9vIHPcrC35dZv0Svu",
-    "calmo": "ORgG8rwdAiMYRug8RJwR",
-    "entusiasta": "MZxV5lN3cv7hi1376O0m"
+users_db = {
+    "EdnirLima": {
+        "password": "Ednir@22031985@",
+        "plan": "enterprise",
+        "credits": 9999,
+        "is_admin": True
+    },
+    "usuario_free": {
+        "password": "123456",
+        "plan": "free",
+        "credits": 3,
+        "is_admin": False
+    }
 }
 
-# ==============================
-# 📦 MODELO DE REQUISIÇÃO
-# ==============================
+# =========================
+# 🎵 MODELO DE REQUISIÇÃO
+# =========================
 
-class TextoRequest(BaseModel):
+class AudioRequest(BaseModel):
     texto: str
-    tom: str = "promocional"
+    tom: Optional[str] = "neutro"
 
-# ==============================
-# 💰 FORMATAR VALORES
-# ==============================
 
-def formatar_valores(texto):
-    def substituir(match):
-        valor = match.group(1)
-        reais, centavos = valor.split(",")
-        return f"{reais} reais e {centavos} centavos"
-    return re.sub(r"R\$\s?(\d+,\d{2})", substituir, texto)
+# =========================
+# 🎙️ FUNÇÃO FAKE DE ÁUDIO
+# =========================
 
-# ==============================
-# 🏠 ROTA TESTE
-# ==============================
+def gerar_audio_fake(texto: str):
+    fake_audio = f"Áudio gerado para: {texto}".encode()
+    return io.BytesIO(fake_audio)
 
-@app.get("/")
-def root():
-    return {"status": "API ElevenLabs rodando 🚀"}
 
-# ==============================
-# 🎧 GERAR ÁUDIO
-# ==============================
+# =========================
+# 🔎 PREVIEW (NÃO CONSOME)
+# =========================
 
-@app.post("/generate")
-def gerar_audio(request: TextoRequest):
+@app.post("/audio/preview")
+def preview_audio(request: AudioRequest, authorization: str = Header(None)):
 
-    tom_normalizado = request.tom.lower().strip()
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Token não enviado")
 
-    if tom_normalizado not in VOICES:
-        raise HTTPException(status_code=400, detail="Tom inválido")
+    audio_stream = gerar_audio_fake(request.texto)
 
-    texto_formatado = formatar_valores(request.texto)
-
-    voice_id = VOICES[tom_normalizado]
-
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-
-    headers = {
-        "xi-api-key": ELEVENLABS_API_KEY,
-        "Content-Type": "application/json"
-    }
-
-    data = {
-        "text": texto_formatado,
-        "model_id": "eleven_multilingual_v2"
-    }
-
-    response = requests.post(url, json=data, headers=headers)
-
-    if response.status_code != 200:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Erro ElevenLabs: {response.text}"
-        )
-
-    return Response(
-        content=response.content,
-        media_type="audio/mpeg",
-        headers={
-            "Content-Disposition": "inline; filename=audio.mp3"
-        }
+    return StreamingResponse(
+        audio_stream,
+        media_type="audio/mpeg"
     )
 
+
+# =========================
+# 🎙️ GERAÇÃO FINAL (CONSUME)
+# =========================
+
+@app.post("/audio/generate")
+def generate_audio(request: AudioRequest, authorization: str = Header(None)):
+
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Token não enviado")
+
+    # Simulação: sempre usar EdnirLima por enquanto
+    user = users_db["EdnirLima"]
+
+    if user["plan"] == "free" and user["credits"] <= 0:
+        raise HTTPException(status_code=403, detail="Sem créditos disponíveis")
+
+    # Consome crédito apenas se não for Enterprise
+    if user["plan"] != "enterprise":
+        user["credits"] -= 1
+
+    audio_stream = gerar_audio_fake(request.texto)
+
+    return StreamingResponse(
+        audio_stream,
+        media_type="audio/mpeg"
+    )
+
+
+# =========================
+# 📊 CONSULTAR CRÉDITOS
+# =========================
+
+@app.get("/me")
+def get_user():
+    user = users_db["EdnirLima"]
+    return {
+        "username": "EdnirLima",
+        "plan": user["plan"],
+        "credits": user["credits"]
+    }
