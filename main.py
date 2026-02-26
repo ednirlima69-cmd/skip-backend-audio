@@ -40,8 +40,8 @@ if not ELEVEN_API_KEY:
 
 # ⚠️ COLOQUE AQUI OS IDs REAIS DA SUA CONTA
 VOICES = {
-    "promocional": "Qrdut83w0Cr152Yb4Xn3",
-    "institucional": "ZqE9vIHPcrC35dZv0Svu",
+    "promocional": "ZqE9vIHPcrC35dZv0Svu",
+    "institucional": "Qrdut83w0Cr152Yb4Xn3",
     "calmo": "ORgG8rwdAiMYRug8RJwR",
     "entusiasta": "MZxV5lN3cv7hi1376O0m"
 }
@@ -134,4 +134,5 @@ def listar_vozes():
         raise HTTPException(status_code=500, detail=response.text)
 
     return response.json()
+
 
