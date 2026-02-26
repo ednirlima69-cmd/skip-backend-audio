@@ -61,7 +61,7 @@ class AudioRequest(BaseModel):
 def gerar_audio_real(texto: str, tom: str):
 
     voice_id = VOICES.get(tom) or VOICES["neutro"]
-    
+
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 
     headers = {
@@ -71,7 +71,11 @@ def gerar_audio_real(texto: str, tom: str):
 
     data = {
         "text": texto,
-        "model_id": "eleven_monolingual_v1"
+        "model_id": "eleven_multilingual_v2",
+        "voice_settings": {
+            "stability": 0.50,
+            "similarity_boost": 0.75
+        }
     }
 
     response = requests.post(url, json=data, headers=headers)
@@ -134,6 +138,7 @@ def listar_vozes():
         raise HTTPException(status_code=500, detail=response.text)
 
     return response.json()
+
 
 
 
