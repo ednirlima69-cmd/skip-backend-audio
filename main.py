@@ -7,6 +7,15 @@ import io
 app = FastAPI()
 
 # =========================
+# ✅ HEALTHCHECK RAILWAY
+# =========================
+
+@app.get("/")
+def root():
+    return {"status": "API rodando 🚀"}
+
+
+# =========================
 # 🔐 USUÁRIOS MOCK
 # =========================
 
@@ -26,7 +35,7 @@ users_db = {
 }
 
 # =========================
-# 🎵 MODELO DE REQUISIÇÃO
+# 🎵 MODELO
 # =========================
 
 class AudioRequest(BaseModel):
@@ -35,7 +44,7 @@ class AudioRequest(BaseModel):
 
 
 # =========================
-# 🎙️ FUNÇÃO FAKE DE ÁUDIO
+# 🎙️ FAKE AUDIO
 # =========================
 
 def gerar_audio_fake(texto: str):
@@ -62,7 +71,7 @@ def preview_audio(request: AudioRequest, authorization: str = Header(None)):
 
 
 # =========================
-# 🎙️ GERAÇÃO FINAL (CONSUME)
+# 🎙️ GERAÇÃO FINAL
 # =========================
 
 @app.post("/audio/generate")
@@ -71,13 +80,11 @@ def generate_audio(request: AudioRequest, authorization: str = Header(None)):
     if not authorization:
         raise HTTPException(status_code=401, detail="Token não enviado")
 
-    # Simulação: sempre usar EdnirLima por enquanto
     user = users_db["EdnirLima"]
 
     if user["plan"] == "free" and user["credits"] <= 0:
         raise HTTPException(status_code=403, detail="Sem créditos disponíveis")
 
-    # Consome crédito apenas se não for Enterprise
     if user["plan"] != "enterprise":
         user["credits"] -= 1
 
@@ -90,7 +97,7 @@ def generate_audio(request: AudioRequest, authorization: str = Header(None)):
 
 
 # =========================
-# 📊 CONSULTAR CRÉDITOS
+# 📊 USER INFO
 # =========================
 
 @app.get("/me")
