@@ -69,8 +69,11 @@ def normalizar_moeda(texto: str):
         centavos = int(match.group(2))
 
         texto_reais = num2words(reais, lang='pt_BR')
-        texto_centavos = num2words(centavos, lang='pt_BR')
 
+        if centavos == 0:
+            return f"{texto_reais} reais"
+
+        texto_centavos = num2words(centavos, lang='pt_BR')
         return f"{texto_reais} reais e {texto_centavos} centavos"
 
     texto = re.sub(padrao, substituir, texto)
@@ -163,3 +166,4 @@ def listar_vozes():
         raise HTTPException(status_code=500, detail=response.text)
 
     return response.json()
+
