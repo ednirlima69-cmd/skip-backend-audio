@@ -138,7 +138,6 @@ def validar_plano(user, texto, tom):
 
     plano = user["plan"]
 
-    # ---------------- FREE ----------------
     if plano == "free":
         if len(texto) > 300:
             raise HTTPException(status_code=403, detail="Limite de 300 caracteres no plano FREE")
@@ -149,7 +148,6 @@ def validar_plano(user, texto, tom):
         if user["credits"] <= 0:
             raise HTTPException(status_code=403, detail="Créditos esgotados. Faça upgrade.")
 
-    # ---------------- PRO ----------------
     elif plano == "pro":
         if len(texto) > 600:
             raise HTTPException(status_code=403, detail="Limite de 600 caracteres no plano PRO")
@@ -166,12 +164,32 @@ def validar_plano(user, texto, tom):
         if user["credits"] <= 0:
             raise HTTPException(status_code=403, detail="Créditos mensais esgotados")
 
-    # ---------------- PRO MAX ----------------
     elif plano == "pro_max":
         if len(texto) > 1000:
             raise HTTPException(status_code=403, detail="Limite de 1000 caracteres no PRO MAX")
 
     return True
+
+# =========================
+# 👤 ENDPOINT /me
+# =========================
+
+@app.get("/me")
+def get_me(authorization: str = Header(None)):
+
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Token não enviado")
+
+    token = authorization.replace("Bearer ", "")
+    user = users_db.get(token)
+
+    if not user:
+        raise HTTPException(status_code=401, detail="Usuário inválido")
+
+    return {
+        "plan": user["plan"],
+        "credits": user["credits"] if user["plan"] != "pro_max" else "ilimitado"
+    }
 
 # =========================
 # 🎙️ GENERATE
@@ -184,7 +202,6 @@ def generate_audio(request: AudioRequest, authorization: str = Header(None)):
         raise HTTPException(status_code=401, detail="Token não enviado")
 
     token = authorization.replace("Bearer ", "")
-
     user = users_db.get(token)
 
     if not user:
@@ -192,13 +209,11 @@ def generate_audio(request: AudioRequest, authorization: str = Header(None)):
 
     validar_plano(user, request.texto, request.tom)
 
-    # Debita crédito se não for PRO MAX
     if user["plan"] != "pro_max":
         user["credits"] -= 1
 
     texto_final = request.texto
 
-    # Marca d'água no FREE
     if user["plan"] == "free":
         texto_final += " Áudio gerado com E e K Voice."
 
