@@ -44,11 +44,28 @@ if not ELEVEN_API_KEY:
 if not DATABASE_URL:
     raise Exception("DATABASE_URL não configurada")
 
+# =========================
+# VOZES FIXAS DO SKIP
+# (Troque os IDs conforme desejar)
+# =========================
+
+VOICES = {
+    "promocional": "ZqE9vIHPcrC35dZv0Svu",
+    "institucional": "Qrdut83w0Cr152Yb4Xn3",
+    "calmo": "ORgG8rwdAiMYRug8RJwR",
+    "entusiasta": "MZxV5lN3cv7hi1376O0m",
+    "neutro": "ZqE9vIHPcrC35dZv0Svu"
+}
+
+# =========================
+# CONEXÃO BANCO
+# =========================
+
 def get_connection():
     return psycopg2.connect(DATABASE_URL)
 
 # =========================
-# BANCO
+# CRIA TABELA SE NÃO EXISTIR
 # =========================
 
 def create_tables():
@@ -72,7 +89,7 @@ def create_tables():
 create_tables()
 
 # =========================
-# ROOT
+# ROOT (remove 404 Railway)
 # =========================
 
 @app.get("/")
@@ -93,7 +110,7 @@ class UserLogin(BaseModel):
 
 class AudioRequest(BaseModel):
     texto: str
-    tom: Optional[str] = "ek_comercial_feminina"
+    tom: Optional[str] = "promocional"
 
 # =========================
 # JWT
@@ -113,7 +130,7 @@ def get_current_user(authorization: str = Header(None)):
 
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id: int = payload.get("user_id")
+        user_id = payload.get("user_id")
     except JWTError:
         raise HTTPException(status_code=401, detail="Token inválido ou expirado")
 
@@ -141,7 +158,7 @@ def get_current_user(authorization: str = Header(None)):
 
 def admin_required(current_user: dict = Depends(get_current_user)):
     if current_user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Acesso permitido apenas para admin")
+        raise HTTPException(status_code=403, detail="Apenas admin pode acessar")
     return current_user
 
 # =========================
@@ -193,7 +210,10 @@ def login(user: UserLogin):
         "role": role
     })
 
-    return {"access_token": access_token, "role": role}
+    return {
+        "access_token": access_token,
+        "role": role
+    }
 
 # =========================
 # /ME
@@ -216,9 +236,19 @@ def generate_audio(
     if current_user["credits"] <= 0:
         raise HTTPException(status_code=403, detail="Sem créditos disponíveis")
 
-    texto_processado = re.sub(r'\d+', lambda x: num2words(int(x.group()), lang='pt_BR'), data.texto)
+    voice_id = VOICES.get(data.tom)
 
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{data.tom}"
+    if not voice_id:
+        raise HTTPException(status_code=400, detail="Tom inválido")
+
+    texto_processado = re.sub(
+        r'\d+',
+        lambda x: num2words(int(x.group()), lang='pt_BR'),
+        data.texto
+    )
+
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+
     headers = {
         "xi-api-key": ELEVEN_API_KEY,
         "Content-Type": "application/json"
