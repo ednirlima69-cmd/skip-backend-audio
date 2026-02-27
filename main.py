@@ -7,6 +7,7 @@ import requests
 import os
 import io
 import re
+import psycopg2
 from num2words import num2words
 
 app = FastAPI()
@@ -36,9 +37,37 @@ def root():
 # =========================
 
 ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not ELEVEN_API_KEY:
     raise Exception("ELEVEN_API_KEY não configurada")
+
+if not DATABASE_URL:
+    raise Exception("DATABASE_URL não configurada")
+
+def get_connection():
+    return psycopg2.connect(DATABASE_URL)
+
+# =========================
+# 🗄️ CRIAR TABELA AUTOMÁTICA
+# =========================
+
+def create_tables():
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            token TEXT UNIQUE NOT NULL,
+            plan TEXT DEFAULT 'free',
+            credits INTEGER DEFAULT 10
+        );
+    """)
+    conn.commit()
+    cur.close()
+    conn.close()
+
+create_tables()
 
 # =========================
 # 🎙️ VOZES OFICIAIS E&K
@@ -49,17 +78,6 @@ VOICES = {
     "ek_impacto_masculino": "Qrdut83w0Cr152Yb4Xn3",
     "ek_corporativo_masculino": "ORgG8rwdAiMYRug8RJwR",
     "ek_energia_feminina": "MZxV5lN3cv7hi1376O0m",
-}
-
-# =========================
-# 🧠 SIMULAÇÃO BANCO (TEMPORÁRIO)
-# =========================
-
-users_db = {
-    "mock_jwt_token_1772104488023": {
-        "plan": "free",  # free | pro | pro_max
-        "credits": 10
-    }
 }
 
 # =========================
@@ -75,7 +93,6 @@ class AudioRequest(BaseModel):
 # =========================
 
 def normalizar_moeda(texto: str):
-
     padrao = r'R?\$?\s?(\d+),(\d{2})'
 
     def substituir(match):
@@ -90,9 +107,7 @@ def normalizar_moeda(texto: str):
         texto_centavos = num2words(centavos, lang='pt_BR')
         return f"{texto_reais} reais e {texto_centavos} centavos"
 
-    texto = re.sub(padrao, substituir, texto)
-
-    return texto
+    return re.sub(padrao, substituir, texto)
 
 # =========================
 # 🔊 ELEVENLABS
@@ -143,7 +158,7 @@ def validar_plano(user, texto, tom):
             raise HTTPException(status_code=403, detail="Limite de 300 caracteres no plano FREE")
 
         if tom != "ek_comercial_feminina":
-            raise HTTPException(status_code=403, detail="Voz disponível apenas no plano PRO")
+            raise HTTPException(status_code=403, detail="Voz disponível apenas no plano FREE")
 
         if user["credits"] <= 0:
             raise HTTPException(status_code=403, detail="Créditos esgotados. Faça upgrade.")
@@ -181,14 +196,28 @@ def get_me(authorization: str = Header(None)):
         raise HTTPException(status_code=401, detail="Token não enviado")
 
     token = authorization.replace("Bearer ", "")
-    user = users_db.get(token)
 
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("SELECT plan, credits FROM users WHERE token = %s", (token,))
+    user = cur.fetchone()
+
+    # cria usuário automaticamente se não existir
     if not user:
-        raise HTTPException(status_code=401, detail="Usuário inválido")
+        cur.execute(
+            "INSERT INTO users (token) VALUES (%s) RETURNING plan, credits",
+            (token,)
+        )
+        conn.commit()
+        user = cur.fetchone()
+
+    cur.close()
+    conn.close()
 
     return {
-        "plan": user["plan"],
-        "credits": user["credits"] if user["plan"] != "pro_max" else "ilimitado"
+        "plan": user[0],
+        "credits": user[1] if user[0] != "pro_max" else "ilimitado"
     }
 
 # =========================
@@ -202,20 +231,39 @@ def generate_audio(request: AudioRequest, authorization: str = Header(None)):
         raise HTTPException(status_code=401, detail="Token não enviado")
 
     token = authorization.replace("Bearer ", "")
-    user = users_db.get(token)
 
-    if not user:
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("SELECT plan, credits FROM users WHERE token = %s", (token,))
+    result = cur.fetchone()
+
+    if not result:
         raise HTTPException(status_code=401, detail="Usuário inválido")
+
+    user = {
+        "plan": result[0],
+        "credits": result[1]
+    }
 
     validar_plano(user, request.texto, request.tom)
 
     if user["plan"] != "pro_max":
-        user["credits"] -= 1
+        novo_credito = user["credits"] - 1
+
+        cur.execute(
+            "UPDATE users SET credits = %s WHERE token = %s",
+            (novo_credito, token)
+        )
+        conn.commit()
 
     texto_final = request.texto
 
     if user["plan"] == "free":
         texto_final += " Áudio gerado com E e K Voice."
+
+    cur.close()
+    conn.close()
 
     audio_stream = gerar_audio_real(texto_final, request.tom)
 
