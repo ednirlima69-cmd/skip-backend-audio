@@ -67,7 +67,11 @@ def create_tables():
     cur.close()
     conn.close()
 
-create_tables()
+try:
+    create_tables()
+    print("Banco conectado com sucesso 🚀")
+except Exception as e:
+    print("Erro ao conectar no banco:", e)
 
 # =========================
 # 🎙️ VOZES OFICIAIS E&K
@@ -279,3 +283,4 @@ def generate_audio(request: AudioRequest, authorization: str = Header(None)):
 @app.get("/voices")
 def listar_vozes():
     return VOICES
+
