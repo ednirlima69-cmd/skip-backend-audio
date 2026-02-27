@@ -16,12 +16,25 @@ from datetime import datetime, timedelta
 app = FastAPI()
 
 # =========================
+# CORS
+# =========================
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# =========================
 # CONFIG
 # =========================
 
 ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
+
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_DAYS = 30
 
@@ -57,6 +70,14 @@ def create_tables():
     conn.close()
 
 create_tables()
+
+# =========================
+# ROOT
+# =========================
+
+@app.get("/")
+def root():
+    return {"status": "SKIP API ONLINE 🚀"}
 
 # =========================
 # MODELOS
@@ -115,19 +136,28 @@ def get_current_user(authorization: str = Header(None)):
     }
 
 # =========================
+# ADMIN REQUIRED
+# =========================
+
+def admin_required(current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Acesso permitido apenas para admin")
+    return current_user
+
+# =========================
 # REGISTER
 # =========================
 
 @app.post("/register")
 def register(user: UserCreate):
-    hashed = bcrypt.hashpw(user.password.encode(), bcrypt.gensalt())
+    hashed = bcrypt.hashpw(user.password.encode(), bcrypt.gensalt()).decode()
 
     try:
         conn = get_connection()
         cur = conn.cursor()
         cur.execute(
             "INSERT INTO users (email, password_hash) VALUES (%s, %s)",
-            (user.email, hashed.decode())
+            (user.email, hashed)
         )
         conn.commit()
         cur.close()
@@ -163,7 +193,7 @@ def login(user: UserLogin):
         "role": role
     })
 
-    return {"access_token": access_token}
+    return {"access_token": access_token, "role": role}
 
 # =========================
 # /ME
@@ -171,9 +201,59 @@ def login(user: UserLogin):
 
 @app.get("/me")
 def me(current_user: dict = Depends(get_current_user)):
+    return current_user
+
+# =========================
+# GERAR ÁUDIO
+# =========================
+
+@app.post("/audio/generate")
+def generate_audio(
+    data: AudioRequest,
+    current_user: dict = Depends(get_current_user)
+):
+
+    if current_user["credits"] <= 0:
+        raise HTTPException(status_code=403, detail="Sem créditos disponíveis")
+
+    texto_processado = re.sub(r'\d+', lambda x: num2words(int(x.group()), lang='pt_BR'), data.texto)
+
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{data.tom}"
+    headers = {
+        "xi-api-key": ELEVEN_API_KEY,
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "text": texto_processado,
+        "model_id": "eleven_multilingual_v2"
+    }
+
+    response = requests.post(url, json=payload, headers=headers)
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=500, detail="Erro ao gerar áudio")
+
+    # desconta crédito
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE users SET credits = credits - 1 WHERE id = %s",
+        (current_user["id"],)
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return StreamingResponse(io.BytesIO(response.content), media_type="audio/mpeg")
+
+# =========================
+# ADMIN DASHBOARD
+# =========================
+
+@app.get("/admin/dashboard")
+def admin_dashboard(current_user: dict = Depends(admin_required)):
     return {
-        "email": current_user["email"],
-        "plan": current_user["plan"],
-        "credits": current_user["credits"],
-        "role": current_user["role"]
+        "message": "Painel Admin 🔥",
+        "usuario": current_user["email"]
     }
