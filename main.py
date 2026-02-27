@@ -40,12 +40,26 @@ ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY")
 if not ELEVEN_API_KEY:
     raise Exception("ELEVEN_API_KEY não configurada")
 
+# =========================
+# 🎙️ VOZES OFICIAIS E&K
+# =========================
+
 VOICES = {
-    "promocional": "ZqE9vIHPcrC35dZv0Svu",
-    "institucional": "Qrdut83w0Cr152Yb4Xn3",
-    "calmo": "ORgG8rwdAiMYRug8RJwR",
-    "entusiasta": "MZxV5lN3cv7hi1376O0m",
-    "neutro": "ZqE9vIHPcrC35dZv0Svu"
+    "ek_comercial_feminina": "ZqE9vIHPcrC35dZv0Svu",
+    "ek_impacto_masculino": "Qrdut83w0Cr152Yb4Xn3",
+    "ek_corporativo_masculino": "ORgG8rwdAiMYRug8RJwR",
+    "ek_energia_feminina": "MZxV5lN3cv7hi1376O0m",
+}
+
+# =========================
+# 🧠 SIMULAÇÃO BANCO (TEMPORÁRIO)
+# =========================
+
+users_db = {
+    "mock_jwt_token_1772104488023": {
+        "plan": "free",  # free | pro | pro_max
+        "credits": 10
+    }
 }
 
 # =========================
@@ -54,7 +68,7 @@ VOICES = {
 
 class AudioRequest(BaseModel):
     texto: str
-    tom: Optional[str] = "neutro"
+    tom: Optional[str] = "ek_comercial_feminina"
 
 # =========================
 # 💰 NORMALIZAÇÃO DE MOEDA
@@ -81,14 +95,17 @@ def normalizar_moeda(texto: str):
     return texto
 
 # =========================
-# 🔊 FUNÇÃO REAL ELEVENLABS
+# 🔊 ELEVENLABS
 # =========================
 
 def gerar_audio_real(texto: str, tom: str):
 
     texto = normalizar_moeda(texto)
 
-    voice_id = VOICES.get(tom) or VOICES["neutro"]
+    voice_id = VOICES.get(tom)
+
+    if not voice_id:
+        raise HTTPException(status_code=400, detail="Voz inválida")
 
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 
@@ -114,21 +131,47 @@ def gerar_audio_real(texto: str, tom: str):
     return io.BytesIO(response.content)
 
 # =========================
-# 🔎 PREVIEW
+# 🔒 VALIDAÇÃO DE PLANO
 # =========================
 
-@app.post("/audio/preview")
-def preview_audio(request: AudioRequest, authorization: str = Header(None)):
+def validar_plano(user, texto, tom):
 
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Token não enviado")
+    plano = user["plan"]
 
-    audio_stream = gerar_audio_real(request.texto, request.tom)
+    # ---------------- FREE ----------------
+    if plano == "free":
+        if len(texto) > 300:
+            raise HTTPException(status_code=403, detail="Limite de 300 caracteres no plano FREE")
 
-    return StreamingResponse(
-        audio_stream,
-        media_type="audio/mpeg"
-    )
+        if tom != "ek_comercial_feminina":
+            raise HTTPException(status_code=403, detail="Voz disponível apenas no plano PRO")
+
+        if user["credits"] <= 0:
+            raise HTTPException(status_code=403, detail="Créditos esgotados. Faça upgrade.")
+
+    # ---------------- PRO ----------------
+    elif plano == "pro":
+        if len(texto) > 600:
+            raise HTTPException(status_code=403, detail="Limite de 600 caracteres no plano PRO")
+
+        vozes_permitidas = [
+            "ek_comercial_feminina",
+            "ek_impacto_masculino",
+            "ek_corporativo_masculino"
+        ]
+
+        if tom not in vozes_permitidas:
+            raise HTTPException(status_code=403, detail="Voz disponível apenas no PRO MAX")
+
+        if user["credits"] <= 0:
+            raise HTTPException(status_code=403, detail="Créditos mensais esgotados")
+
+    # ---------------- PRO MAX ----------------
+    elif plano == "pro_max":
+        if len(texto) > 1000:
+            raise HTTPException(status_code=403, detail="Limite de 1000 caracteres no PRO MAX")
+
+    return True
 
 # =========================
 # 🎙️ GENERATE
@@ -140,7 +183,26 @@ def generate_audio(request: AudioRequest, authorization: str = Header(None)):
     if not authorization:
         raise HTTPException(status_code=401, detail="Token não enviado")
 
-    audio_stream = gerar_audio_real(request.texto, request.tom)
+    token = authorization.replace("Bearer ", "")
+
+    user = users_db.get(token)
+
+    if not user:
+        raise HTTPException(status_code=401, detail="Usuário inválido")
+
+    validar_plano(user, request.texto, request.tom)
+
+    # Debita crédito se não for PRO MAX
+    if user["plan"] != "pro_max":
+        user["credits"] -= 1
+
+    texto_final = request.texto
+
+    # Marca d'água no FREE
+    if user["plan"] == "free":
+        texto_final += " Áudio gerado com E e K Voice."
+
+    audio_stream = gerar_audio_real(texto_final, request.tom)
 
     return StreamingResponse(
         audio_stream,
@@ -153,17 +215,4 @@ def generate_audio(request: AudioRequest, authorization: str = Header(None)):
 
 @app.get("/voices")
 def listar_vozes():
-
-    url = "https://api.elevenlabs.io/v1/voices"
-
-    headers = {
-        "xi-api-key": ELEVEN_API_KEY
-    }
-
-    response = requests.get(url, headers=headers)
-
-    if response.status_code != 200:
-        raise HTTPException(status_code=500, detail=response.text)
-
-    return response.json()
-
+    return VOICES
