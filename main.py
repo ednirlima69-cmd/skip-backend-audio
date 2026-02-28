@@ -1,6 +1,7 @@
-from fastapi import FastAPI, HTTPException, Header, Depends
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel
 from typing import Optional
 import requests
@@ -38,6 +39,8 @@ SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_DAYS = 30
 
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+
 if not ELEVEN_API_KEY:
     raise Exception("ELEVEN_API_KEY não configurada")
 
@@ -45,8 +48,7 @@ if not DATABASE_URL:
     raise Exception("DATABASE_URL não configurada")
 
 # =========================
-# VOZES FIXAS DO SKIP
-# (Troque os IDs conforme desejar)
+# VOZES FIXAS
 # =========================
 
 VOICES = {
@@ -58,15 +60,11 @@ VOICES = {
 }
 
 # =========================
-# CONEXÃO BANCO
+# BANCO
 # =========================
 
 def get_connection():
     return psycopg2.connect(DATABASE_URL)
-
-# =========================
-# CRIA TABELA SE NÃO EXISTIR
-# =========================
 
 def create_tables():
     conn = get_connection()
@@ -86,29 +84,9 @@ def create_tables():
     cur.close()
     conn.close()
 
-
 @app.on_event("startup")
 def startup_event():
     create_tables()
-
-
-@app.get("/admin/drop-users")
-def drop_users():
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("DROP TABLE IF EXISTS users;")
-    conn.commit()
-    cur.close()
-    conn.close()
-    return {"status": "users table dropped"}
-
-# =========================
-# ROOT (remove 404 Railway)
-# =========================
-
-@app.get("/")
-def root():
-    return {"status": "SKIP API ONLINE 🚀"}
 
 # =========================
 # MODELOS
@@ -136,12 +114,7 @@ def create_access_token(data: dict):
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-def get_current_user(authorization: str = Header(None)):
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Token não enviado")
-
-    token = authorization.replace("Bearer ", "")
-
+def get_current_user(token: str = Depends(oauth2_scheme)):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id = payload.get("user_id")
@@ -166,14 +139,18 @@ def get_current_user(authorization: str = Header(None)):
         "role": user[4]
     }
 
-# =========================
-# ADMIN REQUIRED
-# =========================
-
 def admin_required(current_user: dict = Depends(get_current_user)):
     if current_user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Apenas admin pode acessar")
     return current_user
+
+# =========================
+# ROOT
+# =========================
+
+@app.get("/")
+def root():
+    return {"status": "SKIP API ONLINE 🚀"}
 
 # =========================
 # REGISTER
@@ -226,6 +203,7 @@ def login(user: UserLogin):
 
     return {
         "access_token": access_token,
+        "token_type": "bearer",
         "role": role
     }
 
@@ -247,7 +225,7 @@ def generate_audio(
     current_user: dict = Depends(get_current_user)
 ):
 
-    if current_user["credits"] <= 0:
+    if current_user["role"] != "admin" and current_user["credits"] <= 0:
         raise HTTPException(status_code=403, detail="Sem créditos disponíveis")
 
     voice_id = VOICES.get(data.tom)
@@ -278,16 +256,17 @@ def generate_audio(
     if response.status_code != 200:
         raise HTTPException(status_code=500, detail="Erro ao gerar áudio")
 
-    # desconta crédito
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "UPDATE users SET credits = credits - 1 WHERE id = %s",
-        (current_user["id"],)
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
+    # ADMIN NÃO DESCONTA CRÉDITO
+    if current_user["role"] != "admin":
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE users SET credits = credits - 1 WHERE id = %s",
+            (current_user["id"],)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
 
     return StreamingResponse(io.BytesIO(response.content), media_type="audio/mpeg")
 
@@ -299,8 +278,7 @@ def generate_audio(
 def admin_dashboard(current_user: dict = Depends(admin_required)):
     return {
         "message": "Painel Admin 🔥",
-        "usuario": current_user["email"]
+        "usuario": current_user["email"],
+        "plano": current_user["plan"],
+        "credits": current_user["credits"]
     }
-
-
-
