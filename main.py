@@ -86,9 +86,11 @@ def create_tables():
     cur.close()
     conn.close()
 
+
 @app.on_event("startup")
 def startup_event():
     create_tables()
+
 
 @app.get("/admin/drop-users")
 def drop_users():
@@ -299,5 +301,6 @@ def admin_dashboard(current_user: dict = Depends(admin_required)):
         "message": "Painel Admin 🔥",
         "usuario": current_user["email"]
     }
+
 
 
