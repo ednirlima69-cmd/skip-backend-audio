@@ -90,6 +90,16 @@ def create_tables():
 def startup_event():
     create_tables()
 
+@app.get("/admin/drop-users")
+def drop_users():
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DROP TABLE IF EXISTS users;")
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"status": "users table dropped"}
+
 # =========================
 # ROOT (remove 404 Railway)
 # =========================
@@ -289,4 +299,5 @@ def admin_dashboard(current_user: dict = Depends(admin_required)):
         "message": "Painel Admin 🔥",
         "usuario": current_user["email"]
     }
+
 
