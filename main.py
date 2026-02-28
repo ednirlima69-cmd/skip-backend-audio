@@ -86,7 +86,9 @@ def create_tables():
     cur.close()
     conn.close()
 
-create_tables()
+@app.on_event("startup")
+def startup_event():
+    create_tables()
 
 # =========================
 # ROOT (remove 404 Railway)
@@ -287,3 +289,4 @@ def admin_dashboard(current_user: dict = Depends(admin_required)):
         "message": "Painel Admin 🔥",
         "usuario": current_user["email"]
     }
+
