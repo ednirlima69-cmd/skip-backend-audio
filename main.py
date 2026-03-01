@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from typing import Optional
 import requests
@@ -96,10 +96,6 @@ class UserCreate(BaseModel):
     email: str
     password: str
 
-class UserLogin(BaseModel):
-    email: str
-    password: str
-
 class AudioRequest(BaseModel):
     texto: str
     tom: Optional[str] = "promocional"
@@ -158,6 +154,7 @@ def root():
 
 @app.post("/register")
 def register(user: UserCreate):
+
     hashed = bcrypt.hashpw(user.password.encode(), bcrypt.gensalt()).decode()
 
     try:
@@ -175,15 +172,18 @@ def register(user: UserCreate):
         raise HTTPException(status_code=400, detail="Email já cadastrado")
 
 # =========================
-# LOGIN
+# LOGIN (PADRÃO OAUTH2)
 # =========================
 
 @app.post("/login")
-def login(user: UserLogin):
+def login(form_data: OAuth2PasswordRequestForm = Depends()):
 
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT id, password_hash, role FROM users WHERE email = %s", (user.email,))
+    cur.execute(
+        "SELECT id, password_hash, role FROM users WHERE email = %s",
+        (form_data.username,)
+    )
     db_user = cur.fetchone()
     cur.close()
     conn.close()
@@ -193,7 +193,7 @@ def login(user: UserLogin):
 
     user_id, password_hash, role = db_user
 
-    if not bcrypt.checkpw(user.password.encode(), password_hash.encode()):
+    if not bcrypt.checkpw(form_data.password.encode(), password_hash.encode()):
         raise HTTPException(status_code=400, detail="Senha incorreta")
 
     access_token = create_access_token({
@@ -203,8 +203,7 @@ def login(user: UserLogin):
 
     return {
         "access_token": access_token,
-        "token_type": "bearer",
-        "role": role
+        "token_type": "bearer"
     }
 
 # =========================
