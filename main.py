@@ -1,7 +1,6 @@
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from typing import Optional
 import requests
@@ -38,8 +37,6 @@ SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_DAYS = 30
-
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 if not ELEVEN_API_KEY:
     raise Exception("ELEVEN_API_KEY não configurada")
@@ -96,6 +93,10 @@ class UserCreate(BaseModel):
     email: str
     password: str
 
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
 class AudioRequest(BaseModel):
     texto: str
     tom: Optional[str] = "promocional"
@@ -110,16 +111,40 @@ def create_access_token(data: dict):
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-def get_current_user(token: str = Depends(oauth2_scheme)):
+def get_current_user(token: str = Depends(lambda: None)):
+    from fastapi.security import HTTPBearer
+    security = HTTPBearer()
+    credentials = security(app)
+
+def get_current_user(token: str = Depends()):
+    from fastapi.security import HTTPBearer
+    security = HTTPBearer()
+    credentials = security(app)
+
+# =========================
+# TOKEN AUTH
+# =========================
+
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+security = HTTPBearer()
+
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    token = credentials.credentials
+
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id = payload.get("user_id")
+        role = payload.get("role")
     except JWTError:
         raise HTTPException(status_code=401, detail="Token inválido ou expirado")
 
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT id, email, plan, credits, role FROM users WHERE id = %s", (user_id,))
+    cur.execute(
+        "SELECT id, email, plan, credits, role FROM users WHERE id = %s",
+        (user_id,)
+    )
     user = cur.fetchone()
     cur.close()
     conn.close()
@@ -141,12 +166,16 @@ def admin_required(current_user: dict = Depends(get_current_user)):
     return current_user
 
 # =========================
-# ROOT
+# ROTAS BÁSICAS
 # =========================
 
 @app.get("/")
 def root():
-    return {"status": "SKIP API ONLINE 🚀"}
+    return {"status": "AI E&K Generator PRO ONLINE 🚀"}
+
+@app.get("/health")
+def health():
+    return {"status": "healthy"}
 
 # =========================
 # REGISTER
@@ -172,17 +201,17 @@ def register(user: UserCreate):
         raise HTTPException(status_code=400, detail="Email já cadastrado")
 
 # =========================
-# LOGIN (PADRÃO OAUTH2)
+# LOGIN JSON
 # =========================
 
 @app.post("/login")
-def login(form_data: OAuth2PasswordRequestForm = Depends()):
+def login(data: LoginRequest):
 
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
         "SELECT id, password_hash, role FROM users WHERE email = %s",
-        (form_data.username,)
+        (data.email,)
     )
     db_user = cur.fetchone()
     cur.close()
@@ -193,7 +222,7 @@ def login(form_data: OAuth2PasswordRequestForm = Depends()):
 
     user_id, password_hash, role = db_user
 
-    if not bcrypt.checkpw(form_data.password.encode(), password_hash.encode()):
+    if not bcrypt.checkpw(data.password.encode(), password_hash.encode()):
         raise HTTPException(status_code=400, detail="Senha incorreta")
 
     access_token = create_access_token({
@@ -207,7 +236,7 @@ def login(form_data: OAuth2PasswordRequestForm = Depends()):
     }
 
 # =========================
-# /ME
+# ME
 # =========================
 
 @app.get("/me")
@@ -255,7 +284,6 @@ def generate_audio(
     if response.status_code != 200:
         raise HTTPException(status_code=500, detail="Erro ao gerar áudio")
 
-    # ADMIN NÃO DESCONTA CRÉDITO
     if current_user["role"] != "admin":
         conn = get_connection()
         cur = conn.cursor()
