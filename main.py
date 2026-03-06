@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import Optional
 import requests
@@ -9,6 +10,7 @@ import io
 import re
 import psycopg2
 import bcrypt
+import secrets
 from num2words import num2words
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
@@ -45,7 +47,7 @@ if not DATABASE_URL:
     raise Exception("DATABASE_URL não configurada")
 
 # =========================
-# VOZES FIXAS
+# VOZES
 # =========================
 
 VOICES = {
@@ -66,6 +68,7 @@ def get_connection():
 def create_tables():
     conn = get_connection()
     cur = conn.cursor()
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
@@ -77,6 +80,16 @@ def create_tables():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
     """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS password_resets (
+            id SERIAL PRIMARY KEY,
+            email TEXT,
+            token TEXT,
+            expires_at TIMESTAMP
+        );
+    """)
+
     conn.commit()
     cur.close()
     conn.close()
@@ -101,6 +114,13 @@ class AudioRequest(BaseModel):
     texto: str
     tom: Optional[str] = "promocional"
 
+class ForgotPassword(BaseModel):
+    email: str
+
+class ResetPassword(BaseModel):
+    token: str
+    new_password: str
+
 # =========================
 # JWT
 # =========================
@@ -111,21 +131,9 @@ def create_access_token(data: dict):
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-def get_current_user(token: str = Depends(lambda: None)):
-    from fastapi.security import HTTPBearer
-    security = HTTPBearer()
-    credentials = security(app)
-
-def get_current_user(token: str = Depends()):
-    from fastapi.security import HTTPBearer
-    security = HTTPBearer()
-    credentials = security(app)
-
 # =========================
 # TOKEN AUTH
 # =========================
-
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 security = HTTPBearer()
 
@@ -137,15 +145,18 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
         user_id = payload.get("user_id")
         role = payload.get("role")
     except JWTError:
-        raise HTTPException(status_code=401, detail="Token inválido ou expirado")
+        raise HTTPException(status_code=401, detail="Token inválido")
 
     conn = get_connection()
     cur = conn.cursor()
+
     cur.execute(
         "SELECT id, email, plan, credits, role FROM users WHERE id = %s",
         (user_id,)
     )
+
     user = cur.fetchone()
+
     cur.close()
     conn.close()
 
@@ -189,19 +200,23 @@ def register(user: UserCreate):
     try:
         conn = get_connection()
         cur = conn.cursor()
+
         cur.execute(
-            "INSERT INTO users (email, password_hash) VALUES (%s, %s)",
+            "INSERT INTO users (email, password_hash) VALUES (%s,%s)",
             (user.email, hashed)
         )
+
         conn.commit()
         cur.close()
         conn.close()
-        return {"message": "Usuário criado com sucesso"}
+
+        return {"message": "Usuário criado"}
+
     except:
         raise HTTPException(status_code=400, detail="Email já cadastrado")
 
 # =========================
-# LOGIN JSON
+# LOGIN
 # =========================
 
 @app.post("/login")
@@ -209,42 +224,109 @@ def login(data: LoginRequest):
 
     conn = get_connection()
     cur = conn.cursor()
+
     cur.execute(
-        "SELECT id, password_hash, role FROM users WHERE email = %s",
+        "SELECT id,password_hash,role FROM users WHERE email=%s",
         (data.email,)
     )
+
     db_user = cur.fetchone()
+
     cur.close()
     conn.close()
 
     if not db_user:
         raise HTTPException(status_code=400, detail="Usuário não encontrado")
 
-    user_id, password_hash, role = db_user
+    user_id,password_hash,role = db_user
 
     if not bcrypt.checkpw(data.password.encode(), password_hash.encode()):
         raise HTTPException(status_code=400, detail="Senha incorreta")
 
-    access_token = create_access_token({
+    token = create_access_token({
         "user_id": user_id,
         "role": role
     })
 
+    return {"access_token": token,"token_type":"bearer"}
+
+# =========================
+# FORGOT PASSWORD
+# =========================
+
+@app.post("/forgot-password")
+def forgot_password(data: ForgotPassword):
+
+    token = secrets.token_urlsafe(32)
+
+    expire = datetime.utcnow() + timedelta(hours=1)
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        "INSERT INTO password_resets (email,token,expires_at) VALUES (%s,%s,%s)",
+        (data.email,token,expire)
+    )
+
+    conn.commit()
+
+    cur.close()
+    conn.close()
+
     return {
-        "access_token": access_token,
-        "token_type": "bearer"
+        "message":"Token gerado",
+        "reset_token":token
     }
 
 # =========================
-# ME
+# RESET PASSWORD
 # =========================
 
-@app.get("/me")
-def me(current_user: dict = Depends(get_current_user)):
-    return current_user
+@app.post("/reset-password")
+def reset_password(data: ResetPassword):
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT email,expires_at FROM password_resets WHERE token=%s",
+        (data.token,)
+    )
+
+    record = cur.fetchone()
+
+    if not record:
+        raise HTTPException(status_code=400,detail="Token inválido")
+
+    email,expires = record
+
+    if datetime.utcnow() > expires:
+        raise HTTPException(status_code=400,detail="Token expirado")
+
+    hashed = bcrypt.hashpw(data.new_password.encode(), bcrypt.gensalt()).decode()
+
+    cur.execute(
+        "UPDATE users SET password_hash=%s WHERE email=%s",
+        (hashed,email)
+    )
+
+    conn.commit()
+
+    cur.execute(
+        "DELETE FROM password_resets WHERE token=%s",
+        (data.token,)
+    )
+
+    conn.commit()
+
+    cur.close()
+    conn.close()
+
+    return {"message":"Senha redefinida com sucesso"}
 
 # =========================
-# GERAR ÁUDIO
+# GERAR AUDIO
 # =========================
 
 @app.post("/audio/generate")
@@ -254,12 +336,9 @@ def generate_audio(
 ):
 
     if current_user["role"] != "admin" and current_user["credits"] <= 0:
-        raise HTTPException(status_code=403, detail="Sem créditos disponíveis")
+        raise HTTPException(status_code=403, detail="Sem créditos")
 
     voice_id = VOICES.get(data.tom)
-
-    if not voice_id:
-        raise HTTPException(status_code=400, detail="Tom inválido")
 
     texto_processado = re.sub(
         r'\d+',
@@ -271,41 +350,45 @@ def generate_audio(
 
     headers = {
         "xi-api-key": ELEVEN_API_KEY,
-        "Content-Type": "application/json"
+        "Content-Type":"application/json"
     }
 
     payload = {
         "text": texto_processado,
-        "model_id": "eleven_multilingual_v2"
+        "model_id":"eleven_multilingual_v2"
     }
 
-    response = requests.post(url, json=payload, headers=headers)
+    response = requests.post(url,json=payload,headers=headers)
 
     if response.status_code != 200:
-        raise HTTPException(status_code=500, detail="Erro ao gerar áudio")
+        raise HTTPException(status_code=500,detail="Erro gerar audio")
 
     if current_user["role"] != "admin":
+
         conn = get_connection()
         cur = conn.cursor()
+
         cur.execute(
-            "UPDATE users SET credits = credits - 1 WHERE id = %s",
+            "UPDATE users SET credits=credits-1 WHERE id=%s",
             (current_user["id"],)
         )
+
         conn.commit()
+
         cur.close()
         conn.close()
 
-    return StreamingResponse(io.BytesIO(response.content), media_type="audio/mpeg")
+    return StreamingResponse(io.BytesIO(response.content),media_type="audio/mpeg")
 
 # =========================
-# ADMIN DASHBOARD
+# ADMIN
 # =========================
 
 @app.get("/admin/dashboard")
 def admin_dashboard(current_user: dict = Depends(admin_required)):
     return {
-        "message": "Painel Admin 🔥",
-        "usuario": current_user["email"],
-        "plano": current_user["plan"],
-        "credits": current_user["credits"]
+        "message":"Painel Admin",
+        "usuario":current_user["email"],
+        "plano":current_user["plan"],
+        "credits":current_user["credits"]
     }
