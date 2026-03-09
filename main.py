@@ -210,11 +210,15 @@ def register(user: UserCreate):
         cur = conn.cursor()
 
         cur.execute(
-            "INSERT INTO users (email,password_hash) VALUES (%s,%s)",
+            """
+            INSERT INTO users (email,password_hash,plan,credits,role)
+            VALUES (%s,%s,'free',10,'user')
+            """,
             (user.email, hashed)
         )
 
         conn.commit()
+
         cur.close()
         conn.close()
 
@@ -256,7 +260,15 @@ def login(data: LoginRequest):
         "role": role
     })
 
-    return {"access_token": token,"token_type":"bearer"}
+    return {
+        "access_token": token,
+        "token_type":"bearer",
+        "user":{
+            "id":user_id,
+            "email":data.email,
+            "role":role
+        }
+    }
 
 # =========================
 # FORGOT PASSWORD
@@ -294,7 +306,13 @@ def reset_password(data: ResetPassword):
     cur = conn.cursor()
 
     cur.execute(
-        "SELECT email,expires_at FROM password_resets WHERE token=%s",
+        """
+        SELECT email,expires_at 
+        FROM password_resets 
+        WHERE token=%s 
+        ORDER BY id DESC 
+        LIMIT 1
+        """,
         (data.token,)
     )
 
@@ -370,7 +388,7 @@ def generate_audio(data: AudioRequest,current_user: dict = Depends(get_current_u
         cur = conn.cursor()
 
         cur.execute(
-            "UPDATE users SET credits=credits-1 WHERE id=%s",
+            "UPDATE users SET credits = GREATEST(credits-1,0) WHERE id=%s",
             (current_user["id"],)
         )
 
