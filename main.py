@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -11,6 +11,7 @@ import re
 import psycopg2
 import bcrypt
 import secrets
+import stripe
 from num2words import num2words
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
@@ -37,14 +38,14 @@ ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
 
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost")
+
+stripe.api_key = STRIPE_SECRET_KEY
+
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_DAYS = 30
-
-if not ELEVEN_API_KEY:
-    raise Exception("ELEVEN_API_KEY não configurada")
-
-if not DATABASE_URL:
-    raise Exception("DATABASE_URL não configurada")
 
 # =========================
 # VOZES
@@ -56,6 +57,16 @@ VOICES = {
     "calmo": "ORgG8rwdAiMYRug8RJwR",
     "entusiasta": "MZxV5lN3cv7hi1376O0m",
     "neutro": "ZqE9vIHPcrC35dZv0Svu"
+}
+
+# =========================
+# PLANOS
+# =========================
+
+PLANS = {
+    "starter": {"price": 990, "credits": 500},
+    "pro": {"price": 2990, "credits": 2000},
+    "agency": {"price": 7990, "credits": 10000},
 }
 
 # =========================
@@ -129,6 +140,9 @@ class ChangePlan(BaseModel):
     email: str
     plan: str
 
+class CheckoutRequest(BaseModel):
+    plan: str
+
 # =========================
 # JWT
 # =========================
@@ -139,13 +153,10 @@ def create_access_token(data: dict):
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-# =========================
-# TOKEN AUTH
-# =========================
-
 security = HTTPBearer()
 
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+
     token = credentials.credentials
 
     try:
@@ -169,7 +180,7 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
     conn.close()
 
     if not user:
-        raise HTTPException(status_code=401, detail="Usuário não encontrado")
+        raise HTTPException(status_code=401)
 
     return {
         "id": user[0],
@@ -181,7 +192,7 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
 
 def admin_required(current_user: dict = Depends(get_current_user)):
     if current_user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Apenas admin pode acessar")
+        raise HTTPException(status_code=403)
     return current_user
 
 # =========================
@@ -190,7 +201,7 @@ def admin_required(current_user: dict = Depends(get_current_user)):
 
 @app.get("/")
 def root():
-    return {"status": "AI E&K Generator PRO ONLINE 🚀"}
+    return {"status": "AI E&K Generator PRO ONLINE"}
 
 @app.get("/health")
 def health():
@@ -209,23 +220,19 @@ def register(user: UserCreate):
         conn = get_connection()
         cur = conn.cursor()
 
-        cur.execute(
-            """
-            INSERT INTO users (email,password_hash,plan,credits,role)
-            VALUES (%s,%s,'free',10,'user')
-            """,
-            (user.email, hashed)
-        )
+        cur.execute("""
+        INSERT INTO users (email,password_hash,plan,credits,role)
+        VALUES (%s,%s,'free',10,'user')
+        """,(user.email,hashed))
 
         conn.commit()
-
         cur.close()
         conn.close()
 
-        return {"message": "Usuário criado"}
+        return {"message":"Usuário criado"}
 
     except:
-        raise HTTPException(status_code=400, detail="Email já cadastrado")
+        raise HTTPException(status_code=400,detail="Email já cadastrado")
 
 # =========================
 # LOGIN
@@ -234,40 +241,32 @@ def register(user: UserCreate):
 @app.post("/login")
 def login(data: LoginRequest):
 
-    conn = get_connection()
-    cur = conn.cursor()
+    conn=get_connection()
+    cur=conn.cursor()
 
     cur.execute(
         "SELECT id,password_hash,role FROM users WHERE email=%s",
         (data.email,)
     )
 
-    db_user = cur.fetchone()
+    db_user=cur.fetchone()
 
     cur.close()
     conn.close()
 
     if not db_user:
-        raise HTTPException(status_code=400, detail="Usuário não encontrado")
+        raise HTTPException(status_code=400)
 
-    user_id,password_hash,role = db_user
+    user_id,password_hash,role=db_user
 
-    if not bcrypt.checkpw(data.password.encode(), password_hash.encode()):
-        raise HTTPException(status_code=400, detail="Senha incorreta")
+    if not bcrypt.checkpw(data.password.encode(),password_hash.encode()):
+        raise HTTPException(status_code=400)
 
-    token = create_access_token({
-        "user_id": user_id,
-        "role": role
-    })
+    token=create_access_token({"user_id":user_id,"role":role})
 
     return {
-        "access_token": token,
-        "token_type":"bearer",
-        "user":{
-            "id":user_id,
-            "email":data.email,
-            "role":role
-        }
+        "access_token":token,
+        "token_type":"bearer"
     }
 
 # =========================
@@ -277,11 +276,11 @@ def login(data: LoginRequest):
 @app.post("/forgot-password")
 def forgot_password(data: ForgotPassword):
 
-    token = secrets.token_urlsafe(32)
-    expire = datetime.utcnow() + timedelta(hours=1)
+    token=secrets.token_urlsafe(32)
+    expire=datetime.utcnow()+timedelta(hours=1)
 
-    conn = get_connection()
-    cur = conn.cursor()
+    conn=get_connection()
+    cur=conn.cursor()
 
     cur.execute(
         "INSERT INTO password_resets (email,token,expires_at) VALUES (%s,%s,%s)",
@@ -293,7 +292,7 @@ def forgot_password(data: ForgotPassword):
     cur.close()
     conn.close()
 
-    return {"message":"Token gerado","reset_token":token}
+    return {"reset_token":token}
 
 # =========================
 # RESET PASSWORD
@@ -302,31 +301,28 @@ def forgot_password(data: ForgotPassword):
 @app.post("/reset-password")
 def reset_password(data: ResetPassword):
 
-    conn = get_connection()
-    cur = conn.cursor()
+    conn=get_connection()
+    cur=conn.cursor()
 
-    cur.execute(
-        """
-        SELECT email,expires_at 
-        FROM password_resets 
-        WHERE token=%s 
-        ORDER BY id DESC 
-        LIMIT 1
-        """,
-        (data.token,)
-    )
+    cur.execute("""
+    SELECT email,expires_at
+    FROM password_resets
+    WHERE token=%s
+    ORDER BY id DESC
+    LIMIT 1
+    """,(data.token,))
 
-    record = cur.fetchone()
+    record=cur.fetchone()
 
     if not record:
-        raise HTTPException(status_code=400,detail="Token inválido")
+        raise HTTPException(status_code=400)
 
-    email,expires = record
+    email,expires=record
 
-    if datetime.utcnow() > expires:
-        raise HTTPException(status_code=400,detail="Token expirado")
+    if datetime.utcnow()>expires:
+        raise HTTPException(status_code=400)
 
-    hashed = bcrypt.hashpw(data.new_password.encode(), bcrypt.gensalt()).decode()
+    hashed=bcrypt.hashpw(data.new_password.encode(),bcrypt.gensalt()).decode()
 
     cur.execute(
         "UPDATE users SET password_hash=%s WHERE email=%s",
@@ -335,61 +331,51 @@ def reset_password(data: ResetPassword):
 
     conn.commit()
 
-    cur.execute(
-        "DELETE FROM password_resets WHERE token=%s",
-        (data.token,)
-    )
-
-    conn.commit()
-
-    cur.close()
-    conn.close()
-
-    return {"message":"Senha redefinida com sucesso"}
+    return {"message":"Senha redefinida"}
 
 # =========================
-# GERAR AUDIO
+# AUDIO
 # =========================
 
 @app.post("/audio/generate")
-def generate_audio(data: AudioRequest,current_user: dict = Depends(get_current_user)):
+def generate_audio(data:AudioRequest,current_user:dict=Depends(get_current_user)):
 
-    if current_user["role"] != "admin" and current_user["credits"] <= 0:
-        raise HTTPException(status_code=403, detail="Sem créditos")
+    if current_user["role"]!="admin" and current_user["credits"]<=0:
+        raise HTTPException(status_code=403)
 
-    voice_id = VOICES.get(data.tom)
+    voice_id=VOICES.get(data.tom)
 
-    texto_processado = re.sub(
+    texto=re.sub(
         r'\d+',
-        lambda x: num2words(int(x.group()), lang='pt_BR'),
+        lambda x:num2words(int(x.group()),lang='pt_BR'),
         data.texto
     )
 
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+    url=f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 
-    headers = {
-        "xi-api-key": ELEVEN_API_KEY,
+    headers={
+        "xi-api-key":ELEVEN_API_KEY,
         "Content-Type":"application/json"
     }
 
-    payload = {
-        "text": texto_processado,
+    payload={
+        "text":texto,
         "model_id":"eleven_multilingual_v2"
     }
 
-    response = requests.post(url,json=payload,headers=headers)
+    response=requests.post(url,json=payload,headers=headers)
 
-    if response.status_code != 200:
-        raise HTTPException(status_code=500,detail="Erro gerar audio")
+    if response.status_code!=200:
+        raise HTTPException(status_code=500)
 
-    if current_user["role"] != "admin":
+    if current_user["role"]!="admin":
 
-        conn = get_connection()
-        cur = conn.cursor()
+        conn=get_connection()
+        cur=conn.cursor()
 
         cur.execute(
-            "UPDATE users SET credits = GREATEST(credits-1,0) WHERE id=%s",
-            (current_user["id"],)
+        "UPDATE users SET credits=GREATEST(credits-1,0) WHERE id=%s",
+        (current_user["id"],)
         )
 
         conn.commit()
@@ -400,139 +386,84 @@ def generate_audio(data: AudioRequest,current_user: dict = Depends(get_current_u
     return StreamingResponse(io.BytesIO(response.content),media_type="audio/mpeg")
 
 # =========================
-# ADMIN DASHBOARD
+# PLANS
 # =========================
 
-@app.get("/admin/dashboard")
-def admin_dashboard(current_user: dict = Depends(admin_required)):
-    return {
-        "message":"Painel Admin",
-        "usuario":current_user["email"],
-        "plano":current_user["plan"],
-        "credits":current_user["credits"]
-    }
+@app.get("/plans")
+def get_plans():
+    return PLANS
 
 # =========================
-# ADMIN USERS
+# STRIPE CHECKOUT
 # =========================
 
-@app.get("/admin/users")
-def list_users(current_user: dict = Depends(admin_required)):
+@app.post("/create-checkout-session")
+def create_checkout(data:CheckoutRequest,current_user:dict=Depends(get_current_user)):
 
-    conn = get_connection()
-    cur = conn.cursor()
+    if data.plan not in PLANS:
+        raise HTTPException(status_code=400)
 
-    cur.execute("SELECT id,email,plan,credits,role,created_at FROM users ORDER BY created_at DESC")
-
-    users = cur.fetchall()
-
-    cur.close()
-    conn.close()
-
-    result=[]
-
-    for u in users:
-        result.append({
-            "id":u[0],
-            "email":u[1],
-            "plan":u[2],
-            "credits":u[3],
-            "role":u[4],
-            "created_at":u[5]
-        })
-
-    return result
-
-# =========================
-# ADMIN ADD CREDITS
-# =========================
-
-@app.post("/admin/add-credits")
-def add_credits(data:AddCredits,current_user:dict=Depends(admin_required)):
-
-    conn=get_connection()
-    cur=conn.cursor()
-
-    cur.execute(
-        "UPDATE users SET credits=credits+%s WHERE email=%s",
-        (data.credits,data.email)
+    session=stripe.checkout.Session.create(
+        payment_method_types=["card"],
+        line_items=[{
+            "price_data":{
+                "currency":"brl",
+                "product_data":{
+                    "name":f"Plano {data.plan}"
+                },
+                "unit_amount":PLANS[data.plan]["price"]
+            },
+            "quantity":1
+        }],
+        mode="payment",
+        success_url=f"{FRONTEND_URL}/success",
+        cancel_url=f"{FRONTEND_URL}/cancel",
+        metadata={
+            "email":current_user["email"],
+            "plan":data.plan
+        }
     )
 
-    conn.commit()
-
-    cur.close()
-    conn.close()
-
-    return {"message":"Créditos adicionados"}
+    return {"checkout_url":session.url}
 
 # =========================
-# ADMIN CHANGE PLAN
+# STRIPE WEBHOOK
 # =========================
 
-@app.post("/admin/change-plan")
-def change_plan(data:ChangePlan,current_user:dict=Depends(admin_required)):
+@app.post("/stripe-webhook")
+async def stripe_webhook(request:Request):
 
-    conn=get_connection()
-    cur=conn.cursor()
+    payload=await request.body()
+    sig_header=request.headers.get("stripe-signature")
 
-    cur.execute(
-        "UPDATE users SET plan=%s WHERE email=%s",
-        (data.plan,data.email)
+    event=stripe.Webhook.construct_event(
+        payload,
+        sig_header,
+        STRIPE_WEBHOOK_SECRET
     )
 
-    conn.commit()
+    if event["type"]=="checkout.session.completed":
 
-    cur.close()
-    conn.close()
+        session=event["data"]["object"]
 
-    return {"message":"Plano atualizado"}
+        email=session["metadata"]["email"]
+        plan=session["metadata"]["plan"]
 
-# =========================
-# ADMIN DELETE USER
-# =========================
+        credits=PLANS[plan]["credits"]
 
-@app.delete("/admin/delete-user/{email}")
-def delete_user(email:str,current_user:dict=Depends(admin_required)):
+        conn=get_connection()
+        cur=conn.cursor()
 
-    conn=get_connection()
-    cur=conn.cursor()
+        cur.execute("""
+        UPDATE users
+        SET credits=credits+%s,
+            plan=%s
+        WHERE email=%s
+        """,(credits,plan,email))
 
-    cur.execute(
-        "DELETE FROM users WHERE email=%s",
-        (email,)
-    )
+        conn.commit()
 
-    conn.commit()
+        cur.close()
+        conn.close()
 
-    cur.close()
-    conn.close()
-
-    return {"message":"Usuário deletado"}
-
-# =========================
-# ADMIN STATS
-# =========================
-
-@app.get("/admin/stats")
-def admin_stats(current_user:dict=Depends(admin_required)):
-
-    conn=get_connection()
-    cur=conn.cursor()
-
-    cur.execute("SELECT COUNT(*) FROM users")
-    total_users=cur.fetchone()[0]
-
-    cur.execute("SELECT COUNT(*) FROM users WHERE plan='free'")
-    free_users=cur.fetchone()[0]
-
-    cur.execute("SELECT COUNT(*) FROM users WHERE plan!='free'")
-    paid_users=cur.fetchone()[0]
-
-    cur.close()
-    conn.close()
-
-    return {
-        "total_users":total_users,
-        "free_users":free_users,
-        "paid_users":paid_users
-    }
+    return {"status":"ok"}
