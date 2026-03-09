@@ -121,6 +121,14 @@ class ResetPassword(BaseModel):
     token: str
     new_password: str
 
+class AddCredits(BaseModel):
+    email: str
+    credits: int
+
+class ChangePlan(BaseModel):
+    email: str
+    plan: str
+
 # =========================
 # JWT
 # =========================
@@ -151,7 +159,7 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
     cur = conn.cursor()
 
     cur.execute(
-        "SELECT id, email, plan, credits, role FROM users WHERE id = %s",
+        "SELECT id,email,plan,credits,role FROM users WHERE id=%s",
         (user_id,)
     )
 
@@ -202,7 +210,7 @@ def register(user: UserCreate):
         cur = conn.cursor()
 
         cur.execute(
-            "INSERT INTO users (email, password_hash) VALUES (%s,%s)",
+            "INSERT INTO users (email,password_hash) VALUES (%s,%s)",
             (user.email, hashed)
         )
 
@@ -258,7 +266,6 @@ def login(data: LoginRequest):
 def forgot_password(data: ForgotPassword):
 
     token = secrets.token_urlsafe(32)
-
     expire = datetime.utcnow() + timedelta(hours=1)
 
     conn = get_connection()
@@ -274,10 +281,7 @@ def forgot_password(data: ForgotPassword):
     cur.close()
     conn.close()
 
-    return {
-        "message":"Token gerado",
-        "reset_token":token
-    }
+    return {"message":"Token gerado","reset_token":token}
 
 # =========================
 # RESET PASSWORD
@@ -330,10 +334,7 @@ def reset_password(data: ResetPassword):
 # =========================
 
 @app.post("/audio/generate")
-def generate_audio(
-    data: AudioRequest,
-    current_user: dict = Depends(get_current_user)
-):
+def generate_audio(data: AudioRequest,current_user: dict = Depends(get_current_user)):
 
     if current_user["role"] != "admin" and current_user["credits"] <= 0:
         raise HTTPException(status_code=403, detail="Sem créditos")
@@ -381,7 +382,7 @@ def generate_audio(
     return StreamingResponse(io.BytesIO(response.content),media_type="audio/mpeg")
 
 # =========================
-# ADMIN
+# ADMIN DASHBOARD
 # =========================
 
 @app.get("/admin/dashboard")
@@ -391,4 +392,129 @@ def admin_dashboard(current_user: dict = Depends(admin_required)):
         "usuario":current_user["email"],
         "plano":current_user["plan"],
         "credits":current_user["credits"]
+    }
+
+# =========================
+# ADMIN USERS
+# =========================
+
+@app.get("/admin/users")
+def list_users(current_user: dict = Depends(admin_required)):
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("SELECT id,email,plan,credits,role,created_at FROM users ORDER BY created_at DESC")
+
+    users = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    result=[]
+
+    for u in users:
+        result.append({
+            "id":u[0],
+            "email":u[1],
+            "plan":u[2],
+            "credits":u[3],
+            "role":u[4],
+            "created_at":u[5]
+        })
+
+    return result
+
+# =========================
+# ADMIN ADD CREDITS
+# =========================
+
+@app.post("/admin/add-credits")
+def add_credits(data:AddCredits,current_user:dict=Depends(admin_required)):
+
+    conn=get_connection()
+    cur=conn.cursor()
+
+    cur.execute(
+        "UPDATE users SET credits=credits+%s WHERE email=%s",
+        (data.credits,data.email)
+    )
+
+    conn.commit()
+
+    cur.close()
+    conn.close()
+
+    return {"message":"Créditos adicionados"}
+
+# =========================
+# ADMIN CHANGE PLAN
+# =========================
+
+@app.post("/admin/change-plan")
+def change_plan(data:ChangePlan,current_user:dict=Depends(admin_required)):
+
+    conn=get_connection()
+    cur=conn.cursor()
+
+    cur.execute(
+        "UPDATE users SET plan=%s WHERE email=%s",
+        (data.plan,data.email)
+    )
+
+    conn.commit()
+
+    cur.close()
+    conn.close()
+
+    return {"message":"Plano atualizado"}
+
+# =========================
+# ADMIN DELETE USER
+# =========================
+
+@app.delete("/admin/delete-user/{email}")
+def delete_user(email:str,current_user:dict=Depends(admin_required)):
+
+    conn=get_connection()
+    cur=conn.cursor()
+
+    cur.execute(
+        "DELETE FROM users WHERE email=%s",
+        (email,)
+    )
+
+    conn.commit()
+
+    cur.close()
+    conn.close()
+
+    return {"message":"Usuário deletado"}
+
+# =========================
+# ADMIN STATS
+# =========================
+
+@app.get("/admin/stats")
+def admin_stats(current_user:dict=Depends(admin_required)):
+
+    conn=get_connection()
+    cur=conn.cursor()
+
+    cur.execute("SELECT COUNT(*) FROM users")
+    total_users=cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM users WHERE plan='free'")
+    free_users=cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM users WHERE plan!='free'")
+    paid_users=cur.fetchone()[0]
+
+    cur.close()
+    conn.close()
+
+    return {
+        "total_users":total_users,
+        "free_users":free_users,
+        "paid_users":paid_users
     }
