@@ -10,7 +10,6 @@ import io
 import re
 import psycopg2
 import bcrypt
-import secrets
 import stripe
 from num2words import num2words
 from jose import JWTError, jwt
@@ -39,10 +38,10 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
 
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost")
 
-stripe.api_key = STRIPE_SECRET_KEY
+if STRIPE_SECRET_KEY:
+    stripe.api_key = STRIPE_SECRET_KEY
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_DAYS = 30
@@ -74,40 +73,43 @@ PLANS = {
 # =========================
 
 def get_connection():
-    return psycopg2.connect(DATABASE_URL)
+    try:
+        return psycopg2.connect(DATABASE_URL)
+    except Exception as e:
+        print("Erro ao conectar no banco:", e)
+        raise
 
 def create_tables():
-    conn = get_connection()
-    cur = conn.cursor()
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id SERIAL PRIMARY KEY,
-            email TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            plan TEXT DEFAULT 'free',
-            credits INTEGER DEFAULT 10,
-            role TEXT DEFAULT 'user',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                plan TEXT DEFAULT 'free',
+                credits INTEGER DEFAULT 10,
+                role TEXT DEFAULT 'user',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS password_resets (
-            id SERIAL PRIMARY KEY,
-            email TEXT,
-            token TEXT,
-            expires_at TIMESTAMP
-        );
-    """)
+        conn.commit()
+        cur.close()
+        conn.close()
 
-    conn.commit()
-    cur.close()
-    conn.close()
+    except Exception as e:
+        print("Erro ao criar tabelas:", e)
 
 @app.on_event("startup")
 def startup_event():
-    create_tables()
+    print("Iniciando servidor...")
+    if DATABASE_URL:
+        create_tables()
+    else:
+        print("DATABASE_URL não configurado")
 
 # =========================
 # MODELOS
@@ -124,13 +126,6 @@ class LoginRequest(BaseModel):
 class AudioRequest(BaseModel):
     texto: str
     tom: Optional[str] = "promocional"
-
-class ForgotPassword(BaseModel):
-    email: str
-
-class ResetPassword(BaseModel):
-    token: str
-    new_password: str
 
 class CheckoutRequest(BaseModel):
     plan: str
@@ -154,7 +149,6 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id = payload.get("user_id")
-        role = payload.get("role")
     except JWTError:
         raise HTTPException(status_code=401, detail="Token inválido")
 
@@ -203,23 +197,25 @@ def register(user: UserCreate):
 
     hashed = bcrypt.hashpw(user.password.encode(), bcrypt.gensalt()).decode()
 
-    try:
-        conn = get_connection()
-        cur = conn.cursor()
+    conn = get_connection()
+    cur = conn.cursor()
 
+    try:
         cur.execute("""
         INSERT INTO users (email,password_hash,plan,credits,role)
         VALUES (%s,%s,'free',10,'user')
         """,(user.email,hashed))
 
         conn.commit()
-        cur.close()
-        conn.close()
-
-        return {"message":"Usuário criado"}
 
     except:
         raise HTTPException(status_code=400,detail="Email já cadastrado")
+
+    finally:
+        cur.close()
+        conn.close()
+
+    return {"message":"Usuário criado"}
 
 # =========================
 # LOGIN
@@ -262,6 +258,9 @@ def login(data: LoginRequest):
 
 @app.post("/audio/generate")
 def generate_audio(data:AudioRequest,current_user:dict=Depends(get_current_user)):
+
+    if not ELEVEN_API_KEY:
+        raise HTTPException(status_code=500, detail="ELEVEN_API_KEY não configurada")
 
     if current_user["role"]!="admin" and current_user["credits"]<=0:
         raise HTTPException(status_code=403)
