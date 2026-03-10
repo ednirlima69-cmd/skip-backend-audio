@@ -132,14 +132,6 @@ class ResetPassword(BaseModel):
     token: str
     new_password: str
 
-class AddCredits(BaseModel):
-    email: str
-    credits: int
-
-class ChangePlan(BaseModel):
-    email: str
-    plan: str
-
 class CheckoutRequest(BaseModel):
     plan: str
 
@@ -189,11 +181,6 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
         "credits": user[3],
         "role": user[4]
     }
-
-def admin_required(current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "admin":
-        raise HTTPException(status_code=403)
-    return current_user
 
 # =========================
 # ROTAS BÁSICAS
@@ -270,70 +257,6 @@ def login(data: LoginRequest):
     }
 
 # =========================
-# FORGOT PASSWORD
-# =========================
-
-@app.post("/forgot-password")
-def forgot_password(data: ForgotPassword):
-
-    token=secrets.token_urlsafe(32)
-    expire=datetime.utcnow()+timedelta(hours=1)
-
-    conn=get_connection()
-    cur=conn.cursor()
-
-    cur.execute(
-        "INSERT INTO password_resets (email,token,expires_at) VALUES (%s,%s,%s)",
-        (data.email,token,expire)
-    )
-
-    conn.commit()
-
-    cur.close()
-    conn.close()
-
-    return {"reset_token":token}
-
-# =========================
-# RESET PASSWORD
-# =========================
-
-@app.post("/reset-password")
-def reset_password(data: ResetPassword):
-
-    conn=get_connection()
-    cur=conn.cursor()
-
-    cur.execute("""
-    SELECT email,expires_at
-    FROM password_resets
-    WHERE token=%s
-    ORDER BY id DESC
-    LIMIT 1
-    """,(data.token,))
-
-    record=cur.fetchone()
-
-    if not record:
-        raise HTTPException(status_code=400)
-
-    email,expires=record
-
-    if datetime.utcnow()>expires:
-        raise HTTPException(status_code=400)
-
-    hashed=bcrypt.hashpw(data.new_password.encode(),bcrypt.gensalt()).decode()
-
-    cur.execute(
-        "UPDATE users SET password_hash=%s WHERE email=%s",
-        (hashed,email)
-    )
-
-    conn.commit()
-
-    return {"message":"Senha redefinida"}
-
-# =========================
 # AUDIO
 # =========================
 
@@ -343,7 +266,7 @@ def generate_audio(data:AudioRequest,current_user:dict=Depends(get_current_user)
     if current_user["role"]!="admin" and current_user["credits"]<=0:
         raise HTTPException(status_code=403)
 
-    voice_id=VOICES.get(data.tom)
+    voice_id = VOICES.get(data.tom, VOICES["promocional"])
 
     texto=re.sub(
         r'\d+',
@@ -360,13 +283,17 @@ def generate_audio(data:AudioRequest,current_user:dict=Depends(get_current_user)
 
     payload={
         "text":texto,
-        "model_id":"eleven_multilingual_v2"
+        "model_id":"eleven_multilingual_v2",
+        "voice_settings":{
+            "stability":0.45,
+            "similarity_boost":0.75
+        }
     }
 
     response=requests.post(url,json=payload,headers=headers)
 
     if response.status_code!=200:
-        raise HTTPException(status_code=500)
+        raise HTTPException(status_code=500,detail=response.text)
 
     if current_user["role"]!="admin":
 
@@ -383,87 +310,8 @@ def generate_audio(data:AudioRequest,current_user:dict=Depends(get_current_user)
         cur.close()
         conn.close()
 
-    return StreamingResponse(io.BytesIO(response.content),media_type="audio/mpeg")
-
-# =========================
-# PLANS
-# =========================
-
-@app.get("/plans")
-def get_plans():
-    return PLANS
-
-# =========================
-# STRIPE CHECKOUT
-# =========================
-
-@app.post("/create-checkout-session")
-def create_checkout(data:CheckoutRequest,current_user:dict=Depends(get_current_user)):
-
-    if data.plan not in PLANS:
-        raise HTTPException(status_code=400)
-
-    session=stripe.checkout.Session.create(
-        payment_method_types=["card"],
-        line_items=[{
-            "price_data":{
-                "currency":"brl",
-                "product_data":{
-                    "name":f"Plano {data.plan}"
-                },
-                "unit_amount":PLANS[data.plan]["price"]
-            },
-            "quantity":1
-        }],
-        mode="payment",
-        success_url=f"{FRONTEND_URL}/success",
-        cancel_url=f"{FRONTEND_URL}/cancel",
-        metadata={
-            "email":current_user["email"],
-            "plan":data.plan
-        }
+    return StreamingResponse(
+        io.BytesIO(response.content),
+        media_type="audio/mpeg",
+        headers={"Content-Disposition":"inline; filename=audio.mp3"}
     )
-
-    return {"checkout_url":session.url}
-
-# =========================
-# STRIPE WEBHOOK
-# =========================
-
-@app.post("/stripe-webhook")
-async def stripe_webhook(request:Request):
-
-    payload=await request.body()
-    sig_header=request.headers.get("stripe-signature")
-
-    event=stripe.Webhook.construct_event(
-        payload,
-        sig_header,
-        STRIPE_WEBHOOK_SECRET
-    )
-
-    if event["type"]=="checkout.session.completed":
-
-        session=event["data"]["object"]
-
-        email=session["metadata"]["email"]
-        plan=session["metadata"]["plan"]
-
-        credits=PLANS[plan]["credits"]
-
-        conn=get_connection()
-        cur=conn.cursor()
-
-        cur.execute("""
-        UPDATE users
-        SET credits=credits+%s,
-            plan=%s
-        WHERE email=%s
-        """,(credits,plan,email))
-
-        conn.commit()
-
-        cur.close()
-        conn.close()
-
-    return {"status":"ok"}
