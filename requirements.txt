@@ -1,8 +1,9 @@
 fastapi
-uvicorn
-pydantic
+uvicorn[standard]
 requests
-num2words
 psycopg2-binary
 bcrypt
-python-jose[cryptography]
+python-jose
+stripe
+num2words
+pydantic
