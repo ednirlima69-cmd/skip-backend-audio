@@ -73,43 +73,32 @@ PLANS = {
 # =========================
 
 def get_connection():
-    try:
-        return psycopg2.connect(DATABASE_URL)
-    except Exception as e:
-        print("Erro ao conectar no banco:", e)
-        raise
+    return psycopg2.connect(DATABASE_URL)
 
 def create_tables():
-    try:
-        conn = get_connection()
-        cur = conn.cursor()
+    conn = get_connection()
+    cur = conn.cursor()
 
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
-                email TEXT UNIQUE NOT NULL,
-                password_hash TEXT NOT NULL,
-                plan TEXT DEFAULT 'free',
-                credits INTEGER DEFAULT 10,
-                role TEXT DEFAULT 'user',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            plan TEXT DEFAULT 'free',
+            credits INTEGER DEFAULT 10,
+            role TEXT DEFAULT 'user',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
 
-        conn.commit()
-        cur.close()
-        conn.close()
-
-    except Exception as e:
-        print("Erro ao criar tabelas:", e)
+    conn.commit()
+    cur.close()
+    conn.close()
 
 @app.on_event("startup")
 def startup_event():
-    print("Iniciando servidor...")
     if DATABASE_URL:
         create_tables()
-    else:
-        print("DATABASE_URL não configurado")
 
 # =========================
 # MODELOS
@@ -142,7 +131,7 @@ def create_access_token(data: dict):
 
 security = HTTPBearer()
 
-def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security):
 
     token = credentials.credentials
 
@@ -177,7 +166,7 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
     }
 
 # =========================
-# ROTAS BÁSICAS
+# ROTAS
 # =========================
 
 @app.get("/")
@@ -253,6 +242,45 @@ def login(data: LoginRequest):
     }
 
 # =========================
+# ME
+# =========================
+
+@app.get("/me")
+def get_me(current_user:dict=Depends(get_current_user)):
+    return current_user
+
+# =========================
+# VOICES
+# =========================
+
+@app.get("/voices")
+def get_voices():
+    return VOICES
+
+# =========================
+# ADMIN DASHBOARD
+# =========================
+
+@app.get("/admin/dashboard")
+def admin_dashboard(current_user:dict=Depends(get_current_user)):
+
+    if current_user["role"]!="admin":
+        raise HTTPException(status_code=403)
+
+    conn=get_connection()
+    cur=conn.cursor()
+
+    cur.execute("SELECT COUNT(*) FROM users")
+    users=cur.fetchone()[0]
+
+    cur.close()
+    conn.close()
+
+    return {
+        "total_users":users
+    }
+
+# =========================
 # AUDIO
 # =========================
 
@@ -260,12 +288,12 @@ def login(data: LoginRequest):
 def generate_audio(data:AudioRequest,current_user:dict=Depends(get_current_user)):
 
     if not ELEVEN_API_KEY:
-        raise HTTPException(status_code=500, detail="ELEVEN_API_KEY não configurada")
+        raise HTTPException(status_code=500,detail="ELEVEN_API_KEY não configurada")
 
     if current_user["role"]!="admin" and current_user["credits"]<=0:
         raise HTTPException(status_code=403)
 
-    voice_id = VOICES.get(data.tom, VOICES["promocional"])
+    voice_id=VOICES.get(data.tom,VOICES["promocional"])
 
     texto=re.sub(
         r'\d+',
@@ -282,11 +310,7 @@ def generate_audio(data:AudioRequest,current_user:dict=Depends(get_current_user)
 
     payload={
         "text":texto,
-        "model_id":"eleven_multilingual_v2",
-        "voice_settings":{
-            "stability":0.45,
-            "similarity_boost":0.75
-        }
+        "model_id":"eleven_multilingual_v2"
     }
 
     response=requests.post(url,json=payload,headers=headers)
@@ -294,23 +318,7 @@ def generate_audio(data:AudioRequest,current_user:dict=Depends(get_current_user)
     if response.status_code!=200:
         raise HTTPException(status_code=500,detail=response.text)
 
-    if current_user["role"]!="admin":
-
-        conn=get_connection()
-        cur=conn.cursor()
-
-        cur.execute(
-        "UPDATE users SET credits=GREATEST(credits-1,0) WHERE id=%s",
-        (current_user["id"],)
-        )
-
-        conn.commit()
-
-        cur.close()
-        conn.close()
-
     return StreamingResponse(
         io.BytesIO(response.content),
-        media_type="audio/mpeg",
-        headers={"Content-Disposition":"inline; filename=audio.mp3"}
+        media_type="audio/mpeg"
     )
