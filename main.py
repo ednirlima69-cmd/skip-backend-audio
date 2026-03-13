@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -38,13 +38,14 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
 
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost")
 
 if STRIPE_SECRET_KEY:
     stripe.api_key = STRIPE_SECRET_KEY
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_DAYS = 30
+
+security = HTTPBearer()
 
 # =========================
 # VOZES
@@ -96,7 +97,7 @@ def create_tables():
     conn.close()
 
 @app.on_event("startup")
-def startup_event():
+def startup():
     if DATABASE_URL:
         create_tables()
 
@@ -116,9 +117,6 @@ class AudioRequest(BaseModel):
     texto: str
     tom: Optional[str] = "promocional"
 
-class CheckoutRequest(BaseModel):
-    plan: str
-
 # =========================
 # JWT
 # =========================
@@ -129,10 +127,8 @@ def create_access_token(data: dict):
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-security = HTTPBearer()
-
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    
+
     token = credentials.credentials
 
     try:
@@ -166,7 +162,7 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
     }
 
 # =========================
-# ROTAS
+# ROTAS BÁSICAS
 # =========================
 
 @app.get("/")
@@ -246,16 +242,23 @@ def login(data: LoginRequest):
 # =========================
 
 @app.get("/me")
-def get_me(current_user:dict=Depends(get_current_user)):
+def me(current_user:dict=Depends(get_current_user)):
     return current_user
 
 # =========================
-# VOICES
+# VOICES (CORRIGIDO)
 # =========================
 
 @app.get("/voices")
-def get_voices():
-    return VOICES
+def voices():
+
+    return [
+        {"id":"promocional","name":"Promocional"},
+        {"id":"institucional","name":"Institucional"},
+        {"id":"calmo","name":"Calmo"},
+        {"id":"entusiasta","name":"Entusiasta"},
+        {"id":"neutro","name":"Neutro"}
+    ]
 
 # =========================
 # ADMIN DASHBOARD
@@ -271,13 +274,13 @@ def admin_dashboard(current_user:dict=Depends(get_current_user)):
     cur=conn.cursor()
 
     cur.execute("SELECT COUNT(*) FROM users")
-    users=cur.fetchone()[0]
+    total_users=cur.fetchone()[0]
 
     cur.close()
     conn.close()
 
     return {
-        "total_users":users
+        "total_users":total_users
     }
 
 # =========================
@@ -310,7 +313,11 @@ def generate_audio(data:AudioRequest,current_user:dict=Depends(get_current_user)
 
     payload={
         "text":texto,
-        "model_id":"eleven_multilingual_v2"
+        "model_id":"eleven_multilingual_v2",
+        "voice_settings":{
+            "stability":0.45,
+            "similarity_boost":0.75
+        }
     }
 
     response=requests.post(url,json=payload,headers=headers)
@@ -318,7 +325,23 @@ def generate_audio(data:AudioRequest,current_user:dict=Depends(get_current_user)
     if response.status_code!=200:
         raise HTTPException(status_code=500,detail=response.text)
 
+    if current_user["role"]!="admin":
+
+        conn=get_connection()
+        cur=conn.cursor()
+
+        cur.execute(
+        "UPDATE users SET credits=GREATEST(credits-1,0) WHERE id=%s",
+        (current_user["id"],)
+        )
+
+        conn.commit()
+
+        cur.close()
+        conn.close()
+
     return StreamingResponse(
         io.BytesIO(response.content),
-        media_type="audio/mpeg"
+        media_type="audio/mpeg",
+        headers={"Content-Disposition":"inline; filename=audio.mp3"}
     )
