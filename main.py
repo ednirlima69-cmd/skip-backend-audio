@@ -1,16 +1,14 @@
 from fastapi import FastAPI, HTTPException, Depends
-from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import Optional
 import requests
 import os
-import io
-import re
 import psycopg2
 import bcrypt
-import stripe
+import re
+import base64
 from num2words import num2words
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
@@ -37,11 +35,6 @@ ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
 
-STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
-
-if STRIPE_SECRET_KEY:
-    stripe.api_key = STRIPE_SECRET_KEY
-
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_DAYS = 30
 
@@ -60,16 +53,6 @@ VOICES = {
 }
 
 # =========================
-# PLANOS
-# =========================
-
-PLANS = {
-    "starter": {"price": 990, "credits": 500},
-    "pro": {"price": 2990, "credits": 2000},
-    "agency": {"price": 7990, "credits": 10000},
-}
-
-# =========================
 # BANCO
 # =========================
 
@@ -77,19 +60,20 @@ def get_connection():
     return psycopg2.connect(DATABASE_URL)
 
 def create_tables():
+
     conn = get_connection()
     cur = conn.cursor()
 
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id SERIAL PRIMARY KEY,
-            email TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            plan TEXT DEFAULT 'free',
-            credits INTEGER DEFAULT 10,
-            role TEXT DEFAULT 'user',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
+    CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        email TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        plan TEXT DEFAULT 'free',
+        credits INTEGER DEFAULT 10,
+        role TEXT DEFAULT 'user',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
     """)
 
     conn.commit()
@@ -122,9 +106,13 @@ class AudioRequest(BaseModel):
 # =========================
 
 def create_access_token(data: dict):
+
     to_encode = data.copy()
+
     expire = datetime.utcnow() + timedelta(days=ACCESS_TOKEN_EXPIRE_DAYS)
+
     to_encode.update({"exp": expire})
+
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
@@ -132,9 +120,13 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
     token = credentials.credentials
 
     try:
+
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+
         user_id = payload.get("user_id")
+
     except JWTError:
+
         raise HTTPException(status_code=401, detail="Token inválido")
 
     conn = get_connection()
@@ -162,7 +154,7 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
     }
 
 # =========================
-# ROTAS BÁSICAS
+# ROTAS BASICAS
 # =========================
 
 @app.get("/")
@@ -185,11 +177,17 @@ def register(user: UserCreate):
     conn = get_connection()
     cur = conn.cursor()
 
+    cur.execute("SELECT COUNT(*) FROM users")
+    total_users = cur.fetchone()[0]
+
+    role = "admin" if total_users == 0 else "user"
+
     try:
+
         cur.execute("""
         INSERT INTO users (email,password_hash,plan,credits,role)
-        VALUES (%s,%s,'free',10,'user')
-        """,(user.email,hashed))
+        VALUES (%s,%s,'free',10,%s)
+        """,(user.email,hashed,role))
 
         conn.commit()
 
@@ -197,10 +195,11 @@ def register(user: UserCreate):
         raise HTTPException(status_code=400,detail="Email já cadastrado")
 
     finally:
+
         cur.close()
         conn.close()
 
-    return {"message":"Usuário criado"}
+    return {"message":"Usuário criado","role":role}
 
 # =========================
 # LOGIN
@@ -246,7 +245,7 @@ def me(current_user:dict=Depends(get_current_user)):
     return current_user
 
 # =========================
-# VOICES (CORRIGIDO)
+# VOICES
 # =========================
 
 @app.get("/voices")
@@ -259,29 +258,6 @@ def voices():
         {"id":"entusiasta","name":"Entusiasta"},
         {"id":"neutro","name":"Neutro"}
     ]
-
-# =========================
-# ADMIN DASHBOARD
-# =========================
-
-@app.get("/admin/dashboard")
-def admin_dashboard(current_user:dict=Depends(get_current_user)):
-
-    if current_user["role"]!="admin":
-        raise HTTPException(status_code=403)
-
-    conn=get_connection()
-    cur=conn.cursor()
-
-    cur.execute("SELECT COUNT(*) FROM users")
-    total_users=cur.fetchone()[0]
-
-    cur.close()
-    conn.close()
-
-    return {
-        "total_users":total_users
-    }
 
 # =========================
 # AUDIO
@@ -313,17 +289,15 @@ def generate_audio(data:AudioRequest,current_user:dict=Depends(get_current_user)
 
     payload={
         "text":texto,
-        "model_id":"eleven_multilingual_v2",
-        "voice_settings":{
-            "stability":0.45,
-            "similarity_boost":0.75
-        }
+        "model_id":"eleven_multilingual_v2"
     }
 
     response=requests.post(url,json=payload,headers=headers)
 
     if response.status_code!=200:
         raise HTTPException(status_code=500,detail=response.text)
+
+    audio_base64 = base64.b64encode(response.content).decode()
 
     if current_user["role"]!="admin":
 
@@ -340,8 +314,6 @@ def generate_audio(data:AudioRequest,current_user:dict=Depends(get_current_user)
         cur.close()
         conn.close()
 
-    return StreamingResponse(
-        io.BytesIO(response.content),
-        media_type="audio/mpeg",
-        headers={"Content-Disposition":"inline; filename=audio.mp3"}
-    )
+    return {
+        "audio_base64": audio_base64
+    }
