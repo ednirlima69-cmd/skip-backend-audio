@@ -180,38 +180,29 @@ def voices_real():
 # AUDIO
 # =========================
 @app.post("/audio/generate")
-def generate_audio(data:AudioRequest,current_user:dict=Depends(get_current_user)):
+def generate_audio(data: AudioRequest, current_user: dict = Depends(get_current_user)):
 
     if not ELEVEN_API_KEY:
-        raise HTTPException(status_code=500,detail="API ElevenLabs não configurada")
+        raise HTTPException(status_code=500, detail="API ElevenLabs não configurada")
 
-    if current_user["role"]!="admin" and current_user["credits"]<=0:
-        raise HTTPException(status_code=403, detail="Sem créditos")
-
-    voice_id = VOICES.get(data.tom, VOICES["promocional"])
-
-    texto = re.sub(
-        r'\d+',
-        lambda x: num2words(int(x.group()), lang='pt_BR'),
-        data.texto
-    )
+    voice_id = VOICES.get(data.tom, list(VOICES.values())[0])
 
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 
     headers = {
         "xi-api-key": ELEVEN_API_KEY,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Accept": "audio/mpeg"  # 🔥 FORÇA MP3 REAL
     }
 
     payload = {
-        "text": texto,
-        "model_id": "eleven_multilingual_v2"
+        "text": data.texto,
+        "model_id": "eleven_turbo_v2"  # 🔥 TROCA DE MODELO (IMPORTANTE)
     }
 
     response = requests.post(url, json=payload, headers=headers)
 
-    print("STATUS ELEVEN:", response.status_code)
-    print("RESPOSTA ELEVEN:", response.text[:200])
+    print("STATUS:", response.status_code)
 
     if response.status_code != 200:
         raise HTTPException(status_code=500, detail=response.text)
@@ -220,11 +211,9 @@ def generate_audio(data:AudioRequest,current_user:dict=Depends(get_current_user)
         raise HTTPException(status_code=500, detail="Áudio vazio")
 
     audio_base64 = base64.b64encode(response.content).decode()
-    audio_id = str(uuid.uuid4())
 
     return {
         "status": "sucesso",
-        "audio_id": audio_id,
-        "voice": data.tom,
+        "voice_id": voice_id,
         "audio_base64": audio_base64
     }
