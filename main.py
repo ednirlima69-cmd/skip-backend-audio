@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import Optional
 import requests
@@ -40,7 +41,7 @@ ACCESS_TOKEN_EXPIRE_DAYS = 30
 security = HTTPBearer()
 
 # =========================
-# VOZES (SUAS ORIGINAIS)
+# VOZES
 # =========================
 VOICES = {
     "promocional": "ZqE9vIHPcrC35dZv0Svu",
@@ -106,7 +107,6 @@ def create_access_token(data: dict):
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-
     token = credentials.credentials
 
     try:
@@ -140,7 +140,7 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
     }
 
 # =========================
-# ROTAS BASICAS
+# ROTAS
 # =========================
 @app.get("/")
 def root():
@@ -151,74 +151,7 @@ def health():
     return {"status": "healthy"}
 
 # =========================
-# REGISTER
-# =========================
-@app.post("/register")
-def register(user: UserCreate):
-
-    hashed = bcrypt.hashpw(user.password.encode(), bcrypt.gensalt()).decode()
-
-    conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute("SELECT COUNT(*) FROM users")
-    total_users = cur.fetchone()[0]
-
-    role = "admin" if total_users == 0 else "user"
-
-    try:
-        cur.execute("""
-        INSERT INTO users (email,password_hash,plan,credits,role)
-        VALUES (%s,%s,'free',10,%s)
-        """,(user.email,hashed,role))
-
-        conn.commit()
-
-    except:
-        raise HTTPException(status_code=400,detail="Email já cadastrado")
-
-    finally:
-        cur.close()
-        conn.close()
-
-    return {"message":"Usuário criado","role":role}
-
-# =========================
-# LOGIN
-# =========================
-@app.post("/login")
-def login(data: LoginRequest):
-
-    conn=get_connection()
-    cur=conn.cursor()
-
-    cur.execute(
-        "SELECT id,password_hash,role FROM users WHERE email=%s",
-        (data.email,)
-    )
-
-    db_user=cur.fetchone()
-
-    cur.close()
-    conn.close()
-
-    if not db_user:
-        raise HTTPException(status_code=400, detail="Usuário não encontrado")
-
-    user_id,password_hash,role=db_user
-
-    if not bcrypt.checkpw(data.password.encode(),password_hash.encode()):
-        raise HTTPException(status_code=400, detail="Senha inválida")
-
-    token=create_access_token({"user_id":user_id,"role":role})
-
-    return {
-        "access_token":token,
-        "token_type":"bearer"
-    }
-
-# =========================
-# AUDIO (MELHORADO)
+# AUDIO DEBUG
 # =========================
 @app.post("/audio/generate")
 def generate_audio(data:AudioRequest,current_user:dict=Depends(get_current_user)):
@@ -229,38 +162,43 @@ def generate_audio(data:AudioRequest,current_user:dict=Depends(get_current_user)
     if current_user["role"]!="admin" and current_user["credits"]<=0:
         raise HTTPException(status_code=403, detail="Sem créditos")
 
+    # 🔥 FORÇA VOZ PADRÃO PRA TESTE (REMOVE DEPOIS)
     voice_id = VOICES.get(data.tom, VOICES["promocional"])
 
-    # 🔢 Converter números
     texto = re.sub(
         r'\d+',
         lambda x: num2words(int(x.group()), lang='pt_BR'),
         data.texto
     )
 
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+
+    headers = {
+        "xi-api-key": ELEVEN_API_KEY,
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "text": texto,
+        "model_id": "eleven_multilingual_v2"
+    }
+
     try:
-        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-
-        headers = {
-            "xi-api-key": ELEVEN_API_KEY,
-            "Content-Type": "application/json"
-        }
-
-        payload = {
-            "text": texto,
-            "model_id": "eleven_multilingual_v2"
-        }
-
         response = requests.post(url, json=payload, headers=headers)
+
+        print("STATUS ELEVEN:", response.status_code)
+        print("RESPOSTA ELEVEN:", response.text[:300])
 
         if response.status_code != 200:
             raise HTTPException(status_code=500, detail=f"Erro ElevenLabs: {response.text}")
 
-        audio_base64 = base64.b64encode(response.content).decode()
+        if not response.content:
+            raise HTTPException(status_code=500, detail="Áudio vazio retornado")
 
+        audio_base64 = base64.b64encode(response.content).decode()
         audio_id = str(uuid.uuid4())
 
-        # 🔻 descontar crédito
+        # desconto de crédito
         if current_user["role"] != "admin":
             conn = get_connection()
             cur = conn.cursor()
@@ -284,3 +222,30 @@ def generate_audio(data:AudioRequest,current_user:dict=Depends(get_current_user)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# =========================
+# DOWNLOAD DIRETO (TESTE)
+# =========================
+@app.post("/audio/download")
+def download_audio(data:AudioRequest):
+
+    voice_id = VOICES.get(data.tom, VOICES["promocional"])
+
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+
+    headers = {
+        "xi-api-key": ELEVEN_API_KEY,
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "text": data.texto,
+        "model_id": "eleven_multilingual_v2"
+    }
+
+    response = requests.post(url, json=payload, headers=headers)
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=500, detail=response.text)
+
+    return Response(content=response.content, media_type="audio/mpeg")
