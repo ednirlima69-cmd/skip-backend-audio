@@ -229,7 +229,7 @@ def generate_audio(data:AudioRequest,current_user:dict=Depends(get_current_user)
 @app.post("/audio/download")
 def download_audio(data:AudioRequest):
 
-    voice_id = VOICES.get(data.tom, VOICES["promocional"])
+    voice_id = "EXAVITQu4vr4xnSDxMaL"
 
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 
