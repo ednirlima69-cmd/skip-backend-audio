@@ -140,7 +140,7 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
     }
 
 # =========================
-# ROTAS
+# ROTAS BASICAS
 # =========================
 @app.get("/")
 def root():
@@ -151,7 +151,33 @@ def health():
     return {"status": "healthy"}
 
 # =========================
-# AUDIO DEBUG
+# VOICES FIXAS (FRONTEND)
+# =========================
+@app.get("/voices")
+def voices():
+    return [
+        {"id":"promocional","name":"Promocional"},
+        {"id":"institucional","name":"Institucional"},
+        {"id":"calmo","name":"Calmo"},
+        {"id":"entusiasta","name":"Entusiasta"},
+        {"id":"neutro","name":"Neutro"}
+    ]
+
+# =========================
+# VOICES REAIS (ELEVEN)
+# =========================
+@app.get("/voices/real")
+def voices_real():
+    headers = {"xi-api-key": ELEVEN_API_KEY}
+    response = requests.get("https://api.elevenlabs.io/v1/voices", headers=headers)
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=500, detail=response.text)
+
+    return response.json()
+
+# =========================
+# AUDIO
 # =========================
 @app.post("/audio/generate")
 def generate_audio(data:AudioRequest,current_user:dict=Depends(get_current_user)):
@@ -162,7 +188,6 @@ def generate_audio(data:AudioRequest,current_user:dict=Depends(get_current_user)
     if current_user["role"]!="admin" and current_user["credits"]<=0:
         raise HTTPException(status_code=403, detail="Sem créditos")
 
-    # 🔥 FORÇA VOZ PADRÃO PRA TESTE (REMOVE DEPOIS)
     voice_id = VOICES.get(data.tom, VOICES["promocional"])
 
     texto = re.sub(
@@ -183,69 +208,23 @@ def generate_audio(data:AudioRequest,current_user:dict=Depends(get_current_user)
         "model_id": "eleven_multilingual_v2"
     }
 
-    try:
-        response = requests.post(url, json=payload, headers=headers)
-
-        print("STATUS ELEVEN:", response.status_code)
-        print("RESPOSTA ELEVEN:", response.text[:300])
-
-        if response.status_code != 200:
-            raise HTTPException(status_code=500, detail=f"Erro ElevenLabs: {response.text}")
-
-        if not response.content:
-            raise HTTPException(status_code=500, detail="Áudio vazio retornado")
-
-        audio_base64 = base64.b64encode(response.content).decode()
-        audio_id = str(uuid.uuid4())
-
-        # desconto de crédito
-        if current_user["role"] != "admin":
-            conn = get_connection()
-            cur = conn.cursor()
-
-            cur.execute(
-                "UPDATE users SET credits=GREATEST(credits-1,0) WHERE id=%s",
-                (current_user["id"],)
-            )
-
-            conn.commit()
-            cur.close()
-            conn.close()
-
-        return {
-            "status": "sucesso",
-            "audio_id": audio_id,
-            "voice": data.tom,
-            "texto_processado": texto,
-            "audio_base64": audio_base64
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# =========================
-# DOWNLOAD DIRETO (TESTE)
-# =========================
-@app.post("/audio/download")
-def download_audio(data:AudioRequest):
-
-    voice_id = "EXAVITQu4vr4xnSDxMaL"
-
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-
-    headers = {
-        "xi-api-key": ELEVEN_API_KEY,
-        "Content-Type": "application/json"
-    }
-
-    payload = {
-        "text": data.texto,
-        "model_id": "eleven_multilingual_v2"
-    }
-
     response = requests.post(url, json=payload, headers=headers)
+
+    print("STATUS ELEVEN:", response.status_code)
+    print("RESPOSTA ELEVEN:", response.text[:200])
 
     if response.status_code != 200:
         raise HTTPException(status_code=500, detail=response.text)
 
-    return Response(content=response.content, media_type="audio/mpeg")
+    if not response.content:
+        raise HTTPException(status_code=500, detail="Áudio vazio")
+
+    audio_base64 = base64.b64encode(response.content).decode()
+    audio_id = str(uuid.uuid4())
+
+    return {
+        "status": "sucesso",
+        "audio_id": audio_id,
+        "voice": data.tom,
+        "audio_base64": audio_base64
+    }
