@@ -192,12 +192,16 @@ def generate_audio(data: AudioRequest, current_user: dict = Depends(get_current_
     headers = {
         "xi-api-key": ELEVEN_API_KEY,
         "Content-Type": "application/json",
-        "Accept": "audio/mpeg"  # 🔥 FORÇA MP3 REAL
+        "Accept": "audio/mpeg"
     }
 
     payload = {
         "text": data.texto,
-        "model_id": "eleven_turbo_v2"  # 🔥 TROCA DE MODELO (IMPORTANTE)
+        "model_id": "eleven_turbo_v2",
+        "voice_settings": {   # 🔥 ESSA PARTE É A CHAVE
+            "stability": 0.5,
+            "similarity_boost": 0.75
+        }
     }
 
     response = requests.post(url, json=payload, headers=headers)
@@ -205,10 +209,14 @@ def generate_audio(data: AudioRequest, current_user: dict = Depends(get_current_
     print("STATUS:", response.status_code)
 
     if response.status_code != 200:
+        print("ERRO ELEVEN:", response.text)
         raise HTTPException(status_code=500, detail=response.text)
 
     if not response.content:
         raise HTTPException(status_code=500, detail="Áudio vazio")
+
+    # 🔥 DEBUG TAMANHO DO ÁUDIO
+    print("TAMANHO AUDIO:", len(response.content))
 
     audio_base64 = base64.b64encode(response.content).decode()
 
