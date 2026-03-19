@@ -12,13 +12,13 @@ import base64
 from num2words import num2words
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
+import uuid
 
 app = FastAPI()
 
 # =========================
 # CORS
 # =========================
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -30,7 +30,6 @@ app.add_middleware(
 # =========================
 # CONFIG
 # =========================
-
 ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
@@ -41,9 +40,8 @@ ACCESS_TOKEN_EXPIRE_DAYS = 30
 security = HTTPBearer()
 
 # =========================
-# VOZES
+# VOZES (SUAS ORIGINAIS)
 # =========================
-
 VOICES = {
     "promocional": "ZqE9vIHPcrC35dZv0Svu",
     "institucional": "Qrdut83w0Cr152Yb4Xn3",
@@ -55,12 +53,10 @@ VOICES = {
 # =========================
 # BANCO
 # =========================
-
 def get_connection():
     return psycopg2.connect(DATABASE_URL)
 
 def create_tables():
-
     conn = get_connection()
     cur = conn.cursor()
 
@@ -88,7 +84,6 @@ def startup():
 # =========================
 # MODELOS
 # =========================
-
 class UserCreate(BaseModel):
     email: str
     password: str
@@ -104,15 +99,10 @@ class AudioRequest(BaseModel):
 # =========================
 # JWT
 # =========================
-
 def create_access_token(data: dict):
-
     to_encode = data.copy()
-
     expire = datetime.utcnow() + timedelta(days=ACCESS_TOKEN_EXPIRE_DAYS)
-
     to_encode.update({"exp": expire})
-
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
@@ -120,13 +110,9 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
     token = credentials.credentials
 
     try:
-
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-
         user_id = payload.get("user_id")
-
     except JWTError:
-
         raise HTTPException(status_code=401, detail="Token inválido")
 
     conn = get_connection()
@@ -156,7 +142,6 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
 # =========================
 # ROTAS BASICAS
 # =========================
-
 @app.get("/")
 def root():
     return {"status": "AI E&K Generator PRO ONLINE"}
@@ -168,7 +153,6 @@ def health():
 # =========================
 # REGISTER
 # =========================
-
 @app.post("/register")
 def register(user: UserCreate):
 
@@ -183,7 +167,6 @@ def register(user: UserCreate):
     role = "admin" if total_users == 0 else "user"
 
     try:
-
         cur.execute("""
         INSERT INTO users (email,password_hash,plan,credits,role)
         VALUES (%s,%s,'free',10,%s)
@@ -195,7 +178,6 @@ def register(user: UserCreate):
         raise HTTPException(status_code=400,detail="Email já cadastrado")
 
     finally:
-
         cur.close()
         conn.close()
 
@@ -204,7 +186,6 @@ def register(user: UserCreate):
 # =========================
 # LOGIN
 # =========================
-
 @app.post("/login")
 def login(data: LoginRequest):
 
@@ -222,12 +203,12 @@ def login(data: LoginRequest):
     conn.close()
 
     if not db_user:
-        raise HTTPException(status_code=400)
+        raise HTTPException(status_code=400, detail="Usuário não encontrado")
 
     user_id,password_hash,role=db_user
 
     if not bcrypt.checkpw(data.password.encode(),password_hash.encode()):
-        raise HTTPException(status_code=400)
+        raise HTTPException(status_code=400, detail="Senha inválida")
 
     token=create_access_token({"user_id":user_id,"role":role})
 
@@ -237,83 +218,69 @@ def login(data: LoginRequest):
     }
 
 # =========================
-# ME
+# AUDIO (MELHORADO)
 # =========================
-
-@app.get("/me")
-def me(current_user:dict=Depends(get_current_user)):
-    return current_user
-
-# =========================
-# VOICES
-# =========================
-
-@app.get("/voices")
-def voices():
-
-    return [
-        {"id":"promocional","name":"Promocional"},
-        {"id":"institucional","name":"Institucional"},
-        {"id":"calmo","name":"Calmo"},
-        {"id":"entusiasta","name":"Entusiasta"},
-        {"id":"neutro","name":"Neutro"}
-    ]
-
-# =========================
-# AUDIO
-# =========================
-
 @app.post("/audio/generate")
 def generate_audio(data:AudioRequest,current_user:dict=Depends(get_current_user)):
 
     if not ELEVEN_API_KEY:
-        raise HTTPException(status_code=500,detail="ELEVEN_API_KEY não configurada")
+        raise HTTPException(status_code=500,detail="API ElevenLabs não configurada")
 
     if current_user["role"]!="admin" and current_user["credits"]<=0:
-        raise HTTPException(status_code=403)
+        raise HTTPException(status_code=403, detail="Sem créditos")
 
-    voice_id=VOICES.get(data.tom,VOICES["promocional"])
+    voice_id = VOICES.get(data.tom, VOICES["promocional"])
 
-    texto=re.sub(
+    # 🔢 Converter números
+    texto = re.sub(
         r'\d+',
-        lambda x:num2words(int(x.group()),lang='pt_BR'),
+        lambda x: num2words(int(x.group()), lang='pt_BR'),
         data.texto
     )
 
-    url=f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+    try:
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 
-    headers={
-        "xi-api-key":ELEVEN_API_KEY,
-        "Content-Type":"application/json"
-    }
+        headers = {
+            "xi-api-key": ELEVEN_API_KEY,
+            "Content-Type": "application/json"
+        }
 
-    payload={
-        "text":texto,
-        "model_id":"eleven_multilingual_v2"
-    }
+        payload = {
+            "text": texto,
+            "model_id": "eleven_multilingual_v2"
+        }
 
-    response=requests.post(url,json=payload,headers=headers)
+        response = requests.post(url, json=payload, headers=headers)
 
-    if response.status_code!=200:
-        raise HTTPException(status_code=500,detail=response.text)
+        if response.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"Erro ElevenLabs: {response.text}")
 
-    audio_base64 = base64.b64encode(response.content).decode()
+        audio_base64 = base64.b64encode(response.content).decode()
 
-    if current_user["role"]!="admin":
+        audio_id = str(uuid.uuid4())
 
-        conn=get_connection()
-        cur=conn.cursor()
+        # 🔻 descontar crédito
+        if current_user["role"] != "admin":
+            conn = get_connection()
+            cur = conn.cursor()
 
-        cur.execute(
-        "UPDATE users SET credits=GREATEST(credits-1,0) WHERE id=%s",
-        (current_user["id"],)
-        )
+            cur.execute(
+                "UPDATE users SET credits=GREATEST(credits-1,0) WHERE id=%s",
+                (current_user["id"],)
+            )
 
-        conn.commit()
+            conn.commit()
+            cur.close()
+            conn.close()
 
-        cur.close()
-        conn.close()
+        return {
+            "status": "sucesso",
+            "audio_id": audio_id,
+            "voice": data.tom,
+            "texto_processado": texto,
+            "audio_base64": audio_base64
+        }
 
-    return {
-        "audio_base64": audio_base64
-    }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
