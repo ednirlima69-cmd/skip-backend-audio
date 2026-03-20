@@ -225,28 +225,4 @@ def generate_audio(data: AudioRequest, current_user: dict = Depends(get_current_
         "voice_id": voice_id,
         "audio_base64": audio_base64
     }
-    # =========================
-# AUDIO TESTE
-# =========================
-    @app.post("/audio/test-real")
-def test_real_audio():
-
-    url = "https://api.elevenlabs.io/v1/text-to-speech/EXAVITQu4vr4xnSDxMaL"
-
-    headers = {
-        "xi-api-key": ELEVEN_API_KEY,
-        "Content-Type": "application/json",
-        "Accept": "audio/mpeg"
-    }
-
-    payload = {
-        "text": "Teste real de voz",
-        "model_id": "eleven_turbo_v2"
-    }
-
-    response = requests.post(url, json=payload, headers=headers)
-
-    if response.status_code != 200:
-        raise HTTPException(status_code=500, detail=response.text)
-
-    return Response(content=response.content, media_type="audio/mpeg")
+   
