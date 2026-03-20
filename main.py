@@ -8,12 +8,8 @@ import requests
 import os
 import psycopg2
 import bcrypt
-import re
-import base64
-from num2words import num2words
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
-import uuid
 
 app = FastAPI()
 
@@ -39,17 +35,6 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_DAYS = 30
 
 security = HTTPBearer()
-
-# =========================
-# VOZES
-# =========================
-VOICES = {
-    "promocional": "ZqE9vIHPcrC35dZv0Svu",
-    "institucional": "Qrdut83w0Cr152Yb4Xn3",
-    "calmo": "ORgG8rwdAiMYRug8RJwR",
-    "entusiasta": "MZxV5lN3cv7hi1376O0m",
-    "neutro": "ZqE9vIHPcrC35dZv0Svu"
-}
 
 # =========================
 # BANCO
@@ -151,7 +136,68 @@ def health():
     return {"status": "healthy"}
 
 # =========================
-# VOICES FIXAS (FRONTEND)
+# REGISTER
+# =========================
+@app.post("/register")
+def register(user: UserCreate):
+    hashed = bcrypt.hashpw(user.password.encode(), bcrypt.gensalt()).decode()
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    try:
+        cur.execute("""
+        INSERT INTO users (email,password_hash,plan,credits,role)
+        VALUES (%s,%s,'free',10,'user')
+        """,(user.email,hashed))
+
+        conn.commit()
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    finally:
+        cur.close()
+        conn.close()
+
+    return {"message":"Usuário criado"}
+
+# =========================
+# LOGIN
+# =========================
+@app.post("/login")
+def login(data: LoginRequest):
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT id,password_hash,role FROM users WHERE email=%s",
+        (data.email,)
+    )
+
+    user = cur.fetchone()
+
+    cur.close()
+    conn.close()
+
+    if not user:
+        raise HTTPException(status_code=400, detail="Usuário não encontrado")
+
+    user_id, password_hash, role = user
+
+    if not bcrypt.checkpw(data.password.encode(), password_hash.encode()):
+        raise HTTPException(status_code=400, detail="Senha inválida")
+
+    token = create_access_token({"user_id": user_id, "role": role})
+
+    return {
+        "access_token": token,
+        "token_type": "bearer"
+    }
+
+# =========================
+# VOICES
 # =========================
 @app.get("/voices")
 def voices():
@@ -164,30 +210,37 @@ def voices():
     ]
 
 # =========================
-# VOICES REAIS (ELEVEN)
+# AUDIO TESTE (FUNCIONA NO NAVEGADOR)
 # =========================
-@app.get("/voices/real")
-def voices_real():
-    headers = {"xi-api-key": ELEVEN_API_KEY}
-    response = requests.get("https://api.elevenlabs.io/v1/voices", headers=headers)
+@app.get("/audio/test")
+def test_audio():
+    url = "https://api.elevenlabs.io/v1/text-to-speech/EXAVITQu4vr4xnSDxMaL"
+
+    headers = {
+        "xi-api-key": ELEVEN_API_KEY,
+        "Content-Type": "application/json",
+        "Accept": "audio/mpeg"
+    }
+
+    payload = {
+        "text": "Teste direto de voz funcionando",
+        "model_id": "eleven_turbo_v2"
+    }
+
+    response = requests.post(url, json=payload, headers=headers)
 
     if response.status_code != 200:
         raise HTTPException(status_code=500, detail=response.text)
 
-    return response.json()
+    return Response(content=response.content, media_type="audio/mpeg")
 
 # =========================
-# AUDIO
+# AUDIO PRINCIPAL
 # =========================
 @app.post("/audio/generate")
 def generate_audio(data: AudioRequest, current_user: dict = Depends(get_current_user)):
 
-    if not ELEVEN_API_KEY:
-        raise HTTPException(status_code=500, detail="API ElevenLabs não configurada")
-
-    voice_id = "EXAVITQu4vr4xnSDxMaL"  # voz garantida
-
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+    url = "https://api.elevenlabs.io/v1/text-to-speech/EXAVITQu4vr4xnSDxMaL"
 
     headers = {
         "xi-api-key": ELEVEN_API_KEY,
@@ -205,8 +258,4 @@ def generate_audio(data: AudioRequest, current_user: dict = Depends(get_current_
     if response.status_code != 200:
         raise HTTPException(status_code=500, detail=response.text)
 
-    return Response(
-        content=response.content,
-        media_type="audio/mpeg"
-    )
-   
+    return Response(content=response.content, media_type="audio/mpeg")
