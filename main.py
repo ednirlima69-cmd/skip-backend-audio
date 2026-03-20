@@ -44,11 +44,11 @@ security = HTTPBearer()
 # VOZES
 # =========================
 VOICES = {
-    "promocional": "21m00Tcm4TlvDq8ikWAM",
-    "institucional": "21m00Tcm4TlvDq8ikWAM",
-    "calmo": "21m00Tcm4TlvDq8ikWAM",
-    "entusiasta": "21m00Tcm4TlvDq8ikWAM",
-    "neutro": "21m00Tcm4TlvDq8ikWAM"
+    "promocional": "ZqE9vIHPcrC35dZv0Svu",
+    "institucional": "Qrdut83w0Cr152Yb4Xn3",
+    "calmo": "ORgG8rwdAiMYRug8RJwR",
+    "entusiasta": "MZxV5lN3cv7hi1376O0m",
+    "neutro": "ZqE9vIHPcrC35dZv0Svu"
 }
 
 # =========================
