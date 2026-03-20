@@ -185,7 +185,7 @@ def generate_audio(data: AudioRequest, current_user: dict = Depends(get_current_
     if not ELEVEN_API_KEY:
         raise HTTPException(status_code=500, detail="API ElevenLabs não configurada")
 
-    voice_id = VOICES.get(data.tom, list(VOICES.values())[0])
+    voice_id = "EXAVITQu4vr4xnSDxMaL"  # voz garantida
 
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 
@@ -197,32 +197,16 @@ def generate_audio(data: AudioRequest, current_user: dict = Depends(get_current_
 
     payload = {
         "text": data.texto,
-        "model_id": "eleven_turbo_v2",
-        "voice_settings": {   # 🔥 ESSA PARTE É A CHAVE
-            "stability": 0.5,
-            "similarity_boost": 0.75
-        }
+        "model_id": "eleven_turbo_v2"
     }
 
     response = requests.post(url, json=payload, headers=headers)
 
-    print("STATUS:", response.status_code)
-
     if response.status_code != 200:
-        print("ERRO ELEVEN:", response.text)
         raise HTTPException(status_code=500, detail=response.text)
 
-    if not response.content:
-        raise HTTPException(status_code=500, detail="Áudio vazio")
-
-    # 🔥 DEBUG TAMANHO DO ÁUDIO
-    print("TAMANHO AUDIO:", len(response.content))
-
-    audio_base64 = base64.b64encode(response.content).decode()
-
-    return {
-        "status": "sucesso",
-        "voice_id": voice_id,
-        "audio_base64": audio_base64
-    }
+    return Response(
+        content=response.content,
+        media_type="audio/mpeg"
+    )
    
