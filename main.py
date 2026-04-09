@@ -13,9 +13,6 @@ from datetime import datetime, timedelta
 
 app = FastAPI()
 
-# =========================
-# CORS
-# =========================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -24,9 +21,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# =========================
-# CONFIG
-# =========================
 ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
@@ -36,16 +30,12 @@ ACCESS_TOKEN_EXPIRE_DAYS = 30
 
 security = HTTPBearer()
 
-# =========================
-# BANCO
-# =========================
 def get_connection():
     return psycopg2.connect(DATABASE_URL)
 
 def create_tables():
     conn = get_connection()
     cur = conn.cursor()
-
     cur.execute("""
     CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -57,7 +47,6 @@ def create_tables():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """)
-
     conn.commit()
     cur.close()
     conn.close()
@@ -67,9 +56,6 @@ def startup():
     if DATABASE_URL:
         create_tables()
 
-# =========================
-# MODELOS
-# =========================
 class UserCreate(BaseModel):
     email: str
     password: str
@@ -82,9 +68,6 @@ class AudioRequest(BaseModel):
     texto: str
     tom: Optional[str] = "promocional"
 
-# =========================
-# JWT
-# =========================
 def create_access_token(data: dict):
     to_encode = data.copy()
     expire = datetime.utcnow() + timedelta(days=ACCESS_TOKEN_EXPIRE_DAYS)
@@ -93,7 +76,6 @@ def create_access_token(data: dict):
 
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
-
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id = payload.get("user_id")
@@ -102,14 +84,11 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
 
     conn = get_connection()
     cur = conn.cursor()
-
     cur.execute(
         "SELECT id,email,plan,credits,role FROM users WHERE id=%s",
         (user_id,)
     )
-
     user = cur.fetchone()
-
     cur.close()
     conn.close()
 
@@ -124,9 +103,6 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
         "role": user[4]
     }
 
-# =========================
-# ROTAS BASICAS
-# =========================
 @app.get("/")
 def root():
     return {"status": "AI E&K Generator PRO ONLINE"}
@@ -136,48 +112,39 @@ def health():
     return {"status": "healthy"}
 
 # =========================
-# REGISTER
+# ME — DADOS DO USUÁRIO LOGADO
 # =========================
+@app.get("/me")
+def me(current_user: dict = Depends(get_current_user)):
+    return current_user
+
 @app.post("/register")
 def register(user: UserCreate):
     hashed = bcrypt.hashpw(user.password.encode(), bcrypt.gensalt()).decode()
-
     conn = get_connection()
     cur = conn.cursor()
-
     try:
         cur.execute("""
         INSERT INTO users (email,password_hash,plan,credits,role)
         VALUES (%s,%s,'free',10,'user')
-        """,(user.email,hashed))
-
+        """, (user.email, hashed))
         conn.commit()
-
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
-
     finally:
         cur.close()
         conn.close()
+    return {"message": "Usuário criado"}
 
-    return {"message":"Usuário criado"}
-
-# =========================
-# LOGIN
-# =========================
 @app.post("/login")
 def login(data: LoginRequest):
-
     conn = get_connection()
     cur = conn.cursor()
-
     cur.execute(
         "SELECT id,password_hash,role FROM users WHERE email=%s",
         (data.email,)
     )
-
     user = cur.fetchone()
-
     cur.close()
     conn.close()
 
@@ -196,66 +163,46 @@ def login(data: LoginRequest):
         "token_type": "bearer"
     }
 
-# =========================
-# VOICES
-# =========================
 @app.get("/voices")
 def voices():
     return [
-        {"id":"promocional","name":"Promocional"},
-        {"id":"institucional","name":"Institucional"},
-        {"id":"calmo","name":"Calmo"},
-        {"id":"entusiasta","name":"Entusiasta"},
-        {"id":"neutro","name":"Neutro"}
+        {"id": "promocional", "name": "Promocional"},
+        {"id": "institucional", "name": "Institucional"},
+        {"id": "calmo", "name": "Calmo"},
+        {"id": "entusiasta", "name": "Entusiasta"},
+        {"id": "neutro", "name": "Neutro"}
     ]
 
-# =========================
-# AUDIO TESTE (FUNCIONA NO NAVEGADOR)
-# =========================
 @app.get("/audio/test")
 def test_audio():
     url = "https://api.elevenlabs.io/v1/text-to-speech/EXAVITQu4vr4xnSDxMaL"
-
     headers = {
         "xi-api-key": ELEVEN_API_KEY,
         "Content-Type": "application/json",
         "Accept": "audio/mpeg"
     }
-
     payload = {
         "text": "Teste direto de voz funcionando",
         "model_id": "eleven_turbo_v2"
     }
-
     response = requests.post(url, json=payload, headers=headers)
-
     if response.status_code != 200:
         raise HTTPException(status_code=500, detail=response.text)
-
     return Response(content=response.content, media_type="audio/mpeg")
 
-# =========================
-# AUDIO PRINCIPAL
-# =========================
 @app.post("/audio/generate")
 def generate_audio(data: AudioRequest, current_user: dict = Depends(get_current_user)):
-
     url = "https://api.elevenlabs.io/v1/text-to-speech/EXAVITQu4vr4xnSDxMaL"
-
     headers = {
         "xi-api-key": ELEVEN_API_KEY,
         "Content-Type": "application/json",
         "Accept": "audio/mpeg"
     }
-
     payload = {
         "text": data.texto,
         "model_id": "eleven_turbo_v2"
     }
-
     response = requests.post(url, json=payload, headers=headers)
-
     if response.status_code != 200:
         raise HTTPException(status_code=500, detail=response.text)
-
     return Response(content=response.content, media_type="audio/mpeg")
