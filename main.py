@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import Response
@@ -24,6 +24,8 @@ app.add_middleware(
 ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
+MP_ACCESS_TOKEN = os.getenv("MP_ACCESS_TOKEN")
+MP_PUBLIC_KEY = os.getenv("MP_PUBLIC_KEY")
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_DAYS = 30
@@ -42,12 +44,27 @@ VOICES = {
 }
 
 # =========================
-# LIMITES POR PLANO
+# PLANOS
 # =========================
-PLAN_CREDITS = {
-    "free": 10,
-    "pro": 100,
-    "premium": 999999
+PLANS = {
+    "pro": {
+        "name": "Plano Pro",
+        "price": 29.90,
+        "credits": 100,
+        "type": "subscription"
+    },
+    "premium": {
+        "name": "Plano Premium",
+        "price": 99.90,
+        "credits": 999999,
+        "type": "subscription"
+    },
+    "avulso": {
+        "name": "Pacote Avulso",
+        "price": 19.90,
+        "credits": 20,
+        "type": "one_time"
+    }
 }
 
 def get_connection():
@@ -56,6 +73,7 @@ def get_connection():
 def create_tables():
     conn = get_connection()
     cur = conn.cursor()
+
     cur.execute("""
     CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -67,6 +85,19 @@ def create_tables():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS payments (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        mp_payment_id TEXT,
+        plan TEXT,
+        amount NUMERIC,
+        status TEXT DEFAULT 'pending',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
+
     conn.commit()
     cur.close()
     conn.close()
@@ -87,6 +118,13 @@ class LoginRequest(BaseModel):
 class AudioRequest(BaseModel):
     texto: str
     tom: Optional[str] = "promocional"
+
+class PaymentRequest(BaseModel):
+    plan: str
+    token: Optional[str] = None
+    payment_method: str = "pix"
+    installments: Optional[int] = 1
+    issuer_id: Optional[str] = None
 
 def create_access_token(data: dict):
     to_encode = data.copy()
@@ -123,9 +161,6 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
         "role": user[4]
     }
 
-# =========================
-# DESCONTA CRÉDITO
-# =========================
 def deduct_credit(user_id: int):
     conn = get_connection()
     cur = conn.cursor()
@@ -133,6 +168,26 @@ def deduct_credit(user_id: int):
         "UPDATE users SET credits = credits - 1 WHERE id = %s",
         (user_id,)
     )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def apply_plan(user_id: int, plan: str):
+    plan_data = PLANS[plan]
+    conn = get_connection()
+    cur = conn.cursor()
+
+    if plan_data["type"] == "one_time":
+        cur.execute(
+            "UPDATE users SET credits = credits + %s WHERE id = %s",
+            (plan_data["credits"], user_id)
+        )
+    else:
+        cur.execute(
+            "UPDATE users SET plan = %s, credits = %s WHERE id = %s",
+            (plan, plan_data["credits"], user_id)
+        )
+
     conn.commit()
     cur.close()
     conn.close()
@@ -148,6 +203,166 @@ def health():
 @app.get("/me")
 def me(current_user: dict = Depends(get_current_user)):
     return current_user
+
+@app.get("/plans")
+def get_plans():
+    return [
+        {"id": "avulso", "name": "Pacote Avulso", "price": 19.90, "credits": 20, "type": "one_time"},
+        {"id": "pro", "name": "Plano Pro", "price": 29.90, "credits": 100, "type": "subscription"},
+        {"id": "premium", "name": "Plano Premium", "price": 99.90, "credits": "ilimitado", "type": "subscription"}
+    ]
+
+@app.get("/mp/public-key")
+def get_public_key():
+    return {"public_key": MP_PUBLIC_KEY}
+
+# =========================
+# CRIAR PAGAMENTO
+# =========================
+@app.post("/payment/create")
+def create_payment(data: PaymentRequest, current_user: dict = Depends(get_current_user)):
+
+    if data.plan not in PLANS:
+        raise HTTPException(status_code=400, detail="Plano inválido")
+
+    plan_data = PLANS[data.plan]
+
+    headers = {
+        "Authorization": f"Bearer {MP_ACCESS_TOKEN}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "transaction_amount": plan_data["price"],
+        "description": plan_data["name"],
+        "payment_method_id": data.payment_method,
+        "payer": {
+            "email": current_user["email"]
+        },
+        "metadata": {
+            "user_id": current_user["id"],
+            "plan": data.plan
+        }
+    }
+
+    if data.payment_method == "pix":
+        payload["payment_method_id"] = "pix"
+
+    elif data.payment_method == "credit_card":
+        if not data.token:
+            raise HTTPException(status_code=400, detail="Token do cartão obrigatório")
+        payload["token"] = data.token
+        payload["installments"] = data.installments or 1
+        if data.issuer_id:
+            payload["issuer_id"] = data.issuer_id
+
+    response = requests.post(
+        "https://api.mercadopago.com/v1/payments",
+        json=payload,
+        headers=headers
+    )
+
+    result = response.json()
+
+    if response.status_code not in [200, 201]:
+        raise HTTPException(status_code=400, detail=result.get("message", "Erro ao criar pagamento"))
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO payments (user_id, mp_payment_id, plan, amount, status)
+        VALUES (%s, %s, %s, %s, %s)
+    """, (
+        current_user["id"],
+        str(result["id"]),
+        data.plan,
+        plan_data["price"],
+        result["status"]
+    ))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    # PIX aprovado na hora
+    if result["status"] == "approved":
+        apply_plan(current_user["id"], data.plan)
+
+    response_data = {
+        "payment_id": result["id"],
+        "status": result["status"],
+        "plan": data.plan
+    }
+
+    # Retorna QR Code para PIX
+    if data.payment_method == "pix":
+        pix_data = result.get("point_of_interaction", {}).get("transaction_data", {})
+        response_data["pix_qr_code"] = pix_data.get("qr_code")
+        response_data["pix_qr_code_base64"] = pix_data.get("qr_code_base64")
+
+    return response_data
+
+# =========================
+# WEBHOOK MERCADO PAGO
+# =========================
+@app.post("/webhook/mp")
+async def webhook_mp(request: Request):
+    body = await request.json()
+
+    if body.get("type") != "payment":
+        return {"status": "ignored"}
+
+    payment_id = body.get("data", {}).get("id")
+    if not payment_id:
+        return {"status": "no payment id"}
+
+    headers = {"Authorization": f"Bearer {MP_ACCESS_TOKEN}"}
+    response = requests.get(
+        f"https://api.mercadopago.com/v1/payments/{payment_id}",
+        headers=headers
+    )
+
+    payment = response.json()
+
+    if payment.get("status") != "approved":
+        return {"status": "not approved"}
+
+    metadata = payment.get("metadata", {})
+    user_id = metadata.get("user_id")
+    plan = metadata.get("plan")
+
+    if not user_id or not plan:
+        return {"status": "missing metadata"}
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE payments SET status = 'approved' WHERE mp_payment_id = %s",
+        (str(payment_id),)
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    apply_plan(int(user_id), plan)
+
+    return {"status": "ok"}
+
+# =========================
+# STATUS DO PAGAMENTO
+# =========================
+@app.get("/payment/status/{payment_id}")
+def payment_status(payment_id: str, current_user: dict = Depends(get_current_user)):
+    headers = {"Authorization": f"Bearer {MP_ACCESS_TOKEN}"}
+    response = requests.get(
+        f"https://api.mercadopago.com/v1/payments/{payment_id}",
+        headers=headers
+    )
+    result = response.json()
+    return {
+        "payment_id": payment_id,
+        "status": result.get("status"),
+        "status_detail": result.get("status_detail")
+    }
 
 @app.post("/register")
 def register(user: UserCreate):
@@ -189,10 +404,7 @@ def login(data: LoginRequest):
 
     token = create_access_token({"user_id": user_id, "role": role})
 
-    return {
-        "access_token": token,
-        "token_type": "bearer"
-    }
+    return {"access_token": token, "token_type": "bearer"}
 
 @app.get("/voices")
 def voices():
@@ -223,16 +435,10 @@ def test_audio():
         raise HTTPException(status_code=500, detail=response.text)
     return Response(content=response.content, media_type="audio/mpeg")
 
-# =========================
-# AUDIO PRINCIPAL COM CRÉDITOS
-# =========================
 @app.post("/audio/generate")
 def generate_audio(data: AudioRequest, current_user: dict = Depends(get_current_user)):
 
-    # Admin nunca perde créditos
     if current_user["role"] != "admin":
-
-        # Verifica se tem créditos
         if current_user["credits"] <= 0:
             raise HTTPException(
                 status_code=402,
@@ -257,7 +463,6 @@ def generate_audio(data: AudioRequest, current_user: dict = Depends(get_current_
     if response.status_code != 200:
         raise HTTPException(status_code=500, detail=response.text)
 
-    # Desconta crédito só após gerar com sucesso
     if current_user["role"] != "admin":
         deduct_credit(current_user["id"])
 
