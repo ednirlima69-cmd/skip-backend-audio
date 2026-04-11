@@ -10,6 +10,7 @@ import psycopg2
 import bcrypt
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
+import uuid
 
 app = FastAPI()
 
@@ -227,28 +228,29 @@ def create_payment(data: PaymentRequest, current_user: dict = Depends(get_curren
 
     plan_data = PLANS[data.plan]
 
+    # Gera chave única obrigatória pelo Mercado Pago
+    idempotency_key = str(uuid.uuid4())
+
     headers = {
         "Authorization": f"Bearer {MP_ACCESS_TOKEN}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "X-Idempotency-Key": idempotency_key
     }
 
     payload = {
-        "transaction_amount": plan_data["price"],
+        "transaction_amount": float(plan_data["price"]),
         "description": plan_data["name"],
         "payment_method_id": data.payment_method,
         "payer": {
             "email": current_user["email"]
         },
         "metadata": {
-            "user_id": current_user["id"],
+            "user_id": str(current_user["id"]),
             "plan": data.plan
         }
     }
 
-    if data.payment_method == "pix":
-        payload["payment_method_id"] = "pix"
-
-    elif data.payment_method == "credit_card":
+    if data.payment_method == "credit_card":
         if not data.token:
             raise HTTPException(status_code=400, detail="Token do cartão obrigatório")
         payload["token"] = data.token
@@ -283,7 +285,6 @@ def create_payment(data: PaymentRequest, current_user: dict = Depends(get_curren
     cur.close()
     conn.close()
 
-    # PIX aprovado na hora
     if result["status"] == "approved":
         apply_plan(current_user["id"], data.plan)
 
@@ -293,7 +294,6 @@ def create_payment(data: PaymentRequest, current_user: dict = Depends(get_curren
         "plan": data.plan
     }
 
-    # Retorna QR Code para PIX
     if data.payment_method == "pix":
         pix_data = result.get("point_of_interaction", {}).get("transaction_data", {})
         response_data["pix_qr_code"] = pix_data.get("qr_code")
