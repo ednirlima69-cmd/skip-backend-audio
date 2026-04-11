@@ -30,6 +30,17 @@ ACCESS_TOKEN_EXPIRE_DAYS = 30
 
 security = HTTPBearer()
 
+# =========================
+# VOZES
+# =========================
+VOICES = {
+    "promocional": "ZqE9vIHPcrC35dZv0Svu",
+    "institucional": "Qrdut83w0Cr152Yb4Xn3",
+    "calmo": "ORgG8rwdAiMYRug8RJwR",
+    "entusiasta": "MZxV5lN3cv7hi1376O0m",
+    "neutro": "ZqE9vIHPcrC35dZv0Svu"
+}
+
 def get_connection():
     return psycopg2.connect(DATABASE_URL)
 
@@ -111,9 +122,6 @@ def root():
 def health():
     return {"status": "healthy"}
 
-# =========================
-# ME — DADOS DO USUÁRIO LOGADO
-# =========================
 @app.get("/me")
 def me(current_user: dict = Depends(get_current_user)):
     return current_user
@@ -175,7 +183,8 @@ def voices():
 
 @app.get("/audio/test")
 def test_audio():
-    url = "https://api.elevenlabs.io/v1/text-to-speech/EXAVITQu4vr4xnSDxMaL"
+    voice_id = VOICES["promocional"]
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
     headers = {
         "xi-api-key": ELEVEN_API_KEY,
         "Content-Type": "application/json",
@@ -192,7 +201,8 @@ def test_audio():
 
 @app.post("/audio/generate")
 def generate_audio(data: AudioRequest, current_user: dict = Depends(get_current_user)):
-    url = "https://api.elevenlabs.io/v1/text-to-speech/EXAVITQu4vr4xnSDxMaL"
+    voice_id = VOICES.get(data.tom, VOICES["promocional"])
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
     headers = {
         "xi-api-key": ELEVEN_API_KEY,
         "Content-Type": "application/json",
