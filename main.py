@@ -11,6 +11,8 @@ import bcrypt
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
 import uuid
+import cloudinary
+import cloudinary.uploader
 
 app = FastAPI()
 
@@ -32,6 +34,15 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_DAYS = 30
 
 security = HTTPBearer()
+
+# =========================
+# CLOUDINARY CONFIG
+# =========================
+cloudinary.config(
+    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+    api_key=os.getenv("CLOUDINARY_API_KEY"),
+    api_secret=os.getenv("CLOUDINARY_API_SECRET")
+)
 
 # =========================
 # VOZES
@@ -106,6 +117,8 @@ def create_tables():
         project_name TEXT,
         texto TEXT,
         tom TEXT,
+        audio_url TEXT,
+        cloudinary_public_id TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """)
@@ -205,13 +218,13 @@ def apply_plan(user_id: int, plan: str):
     cur.close()
     conn.close()
 
-def save_audio_history(user_id: int, project_name: str, texto: str, tom: str):
+def save_audio_history(user_id: int, project_name: str, texto: str, tom: str, audio_url: str, cloudinary_public_id: str):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        INSERT INTO audio_history (user_id, project_name, texto, tom)
-        VALUES (%s, %s, %s, %s)
-    """, (user_id, project_name, texto, tom))
+        INSERT INTO audio_history (user_id, project_name, texto, tom, audio_url, cloudinary_public_id)
+        VALUES (%s, %s, %s, %s, %s, %s)
+    """, (user_id, project_name, texto, tom, audio_url, cloudinary_public_id))
     conn.commit()
     cur.close()
     conn.close()
@@ -248,7 +261,7 @@ def get_audio_history(current_user: dict = Depends(get_current_user)):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        SELECT id, project_name, texto, tom, created_at
+        SELECT id, project_name, texto, tom, audio_url, created_at
         FROM audio_history
         WHERE user_id = %s
         ORDER BY created_at DESC
@@ -265,10 +278,49 @@ def get_audio_history(current_user: dict = Depends(get_current_user)):
             "project_name": row[1],
             "texto": row[2],
             "tom": row[3],
-            "created_at": row[4].strftime("%d/%m/%Y %H:%M")
+            "audio_url": row[4],
+            "created_at": row[5].strftime("%d/%m/%Y %H:%M")
         }
         for row in rows
     ]
+
+# =========================
+# EXCLUIR ÁUDIO DO HISTÓRICO
+# =========================
+@app.delete("/audio/history/{audio_id}")
+def delete_audio(audio_id: int, current_user: dict = Depends(get_current_user)):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT cloudinary_public_id, user_id FROM audio_history WHERE id = %s",
+        (audio_id,)
+    )
+    row = cur.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Áudio não encontrado")
+
+    cloudinary_public_id, owner_id = row
+
+    if owner_id != current_user["id"] and current_user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Sem permissão")
+
+    if cloudinary_public_id:
+        try:
+            cloudinary.uploader.destroy(
+                cloudinary_public_id,
+                resource_type="video"
+            )
+        except Exception:
+            pass
+
+    cur.execute("DELETE FROM audio_history WHERE id = %s", (audio_id,))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return {"message": "Áudio excluído com sucesso"}
 
 # =========================
 # CRIAR PAGAMENTO
@@ -486,6 +538,9 @@ def test_audio():
         raise HTTPException(status_code=500, detail=response.text)
     return Response(content=response.content, media_type="audio/mpeg")
 
+# =========================
+# AUDIO PRINCIPAL COM CLOUDINARY
+# =========================
 @app.post("/audio/generate")
 def generate_audio(data: AudioRequest, current_user: dict = Depends(get_current_user)):
 
@@ -514,6 +569,17 @@ def generate_audio(data: AudioRequest, current_user: dict = Depends(get_current_
     if response.status_code != 200:
         raise HTTPException(status_code=500, detail=response.text)
 
+    # Salva no Cloudinary
+    public_id = f"audio_{current_user['id']}_{uuid.uuid4().hex[:8]}"
+    upload_result = cloudinary.uploader.upload(
+        response.content,
+        resource_type="video",
+        public_id=public_id,
+        folder="ek_generator",
+        format="mp3"
+    )
+    audio_url = upload_result.get("secure_url")
+
     if current_user["role"] != "admin":
         deduct_credit(current_user["id"])
 
@@ -521,7 +587,12 @@ def generate_audio(data: AudioRequest, current_user: dict = Depends(get_current_
         current_user["id"],
         data.project_name,
         data.texto,
-        data.tom
+        data.tom,
+        audio_url,
+        upload_result.get("public_id")
     )
 
-    return Response(content=response.content, media_type="audio/mpeg")
+    return {
+        "audio_url": audio_url,
+        "message": "Áudio gerado com sucesso"
+    }
