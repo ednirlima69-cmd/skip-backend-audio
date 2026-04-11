@@ -192,7 +192,8 @@ def test_audio():
     }
     payload = {
         "text": "Teste direto de voz funcionando",
-        "model_id": "eleven_turbo_v2"
+        "model_id": "eleven_multilingual_v2",
+        "language_code": "pt"
     }
     response = requests.post(url, json=payload, headers=headers)
     if response.status_code != 200:
@@ -210,7 +211,8 @@ def generate_audio(data: AudioRequest, current_user: dict = Depends(get_current_
     }
     payload = {
         "text": data.texto,
-        "model_id": "eleven_turbo_v2"
+        "model_id": "eleven_multilingual_v2",
+        "language_code": "pt"
     }
     response = requests.post(url, json=payload, headers=headers)
     if response.status_code != 200:
