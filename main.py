@@ -99,6 +99,17 @@ def create_tables():
     );
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS audio_history (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        project_name TEXT,
+        texto TEXT,
+        tom TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
+
     conn.commit()
     cur.close()
     conn.close()
@@ -119,6 +130,7 @@ class LoginRequest(BaseModel):
 class AudioRequest(BaseModel):
     texto: str
     tom: Optional[str] = "promocional"
+    project_name: Optional[str] = "Sem título"
 
 class PaymentRequest(BaseModel):
     plan: str
@@ -193,6 +205,17 @@ def apply_plan(user_id: int, plan: str):
     cur.close()
     conn.close()
 
+def save_audio_history(user_id: int, project_name: str, texto: str, tom: str):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO audio_history (user_id, project_name, texto, tom)
+        VALUES (%s, %s, %s, %s)
+    """, (user_id, project_name, texto, tom))
+    conn.commit()
+    cur.close()
+    conn.close()
+
 @app.get("/")
 def root():
     return {"status": "AI E&K Generator PRO ONLINE"}
@@ -218,6 +241,36 @@ def get_public_key():
     return {"public_key": MP_PUBLIC_KEY}
 
 # =========================
+# HISTÓRICO DE ÁUDIOS
+# =========================
+@app.get("/audio/history")
+def get_audio_history(current_user: dict = Depends(get_current_user)):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, project_name, texto, tom, created_at
+        FROM audio_history
+        WHERE user_id = %s
+        ORDER BY created_at DESC
+        LIMIT 50
+    """, (current_user["id"],))
+
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    return [
+        {
+            "id": row[0],
+            "project_name": row[1],
+            "texto": row[2],
+            "tom": row[3],
+            "created_at": row[4].strftime("%d/%m/%Y %H:%M")
+        }
+        for row in rows
+    ]
+
+# =========================
 # CRIAR PAGAMENTO
 # =========================
 @app.post("/payment/create")
@@ -227,8 +280,6 @@ def create_payment(data: PaymentRequest, current_user: dict = Depends(get_curren
         raise HTTPException(status_code=400, detail="Plano inválido")
 
     plan_data = PLANS[data.plan]
-
-    # Gera chave única obrigatória pelo Mercado Pago
     idempotency_key = str(uuid.uuid4())
 
     headers = {
@@ -465,5 +516,12 @@ def generate_audio(data: AudioRequest, current_user: dict = Depends(get_current_
 
     if current_user["role"] != "admin":
         deduct_credit(current_user["id"])
+
+    save_audio_history(
+        current_user["id"],
+        data.project_name,
+        data.texto,
+        data.tom
+    )
 
     return Response(content=response.content, media_type="audio/mpeg")
