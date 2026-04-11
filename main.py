@@ -41,6 +41,15 @@ VOICES = {
     "neutro": "ZqE9vIHPcrC35dZv0Svu"
 }
 
+# =========================
+# LIMITES POR PLANO
+# =========================
+PLAN_CREDITS = {
+    "free": 10,
+    "pro": 100,
+    "premium": 999999
+}
+
 def get_connection():
     return psycopg2.connect(DATABASE_URL)
 
@@ -113,6 +122,20 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
         "credits": user[3],
         "role": user[4]
     }
+
+# =========================
+# DESCONTA CRÉDITO
+# =========================
+def deduct_credit(user_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE users SET credits = credits - 1 WHERE id = %s",
+        (user_id,)
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
 
 @app.get("/")
 def root():
@@ -200,8 +223,22 @@ def test_audio():
         raise HTTPException(status_code=500, detail=response.text)
     return Response(content=response.content, media_type="audio/mpeg")
 
+# =========================
+# AUDIO PRINCIPAL COM CRÉDITOS
+# =========================
 @app.post("/audio/generate")
 def generate_audio(data: AudioRequest, current_user: dict = Depends(get_current_user)):
+
+    # Admin nunca perde créditos
+    if current_user["role"] != "admin":
+
+        # Verifica se tem créditos
+        if current_user["credits"] <= 0:
+            raise HTTPException(
+                status_code=402,
+                detail="Créditos esgotados. Faça upgrade do seu plano para continuar."
+            )
+
     voice_id = VOICES.get(data.tom, VOICES["promocional"])
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
     headers = {
@@ -214,7 +251,14 @@ def generate_audio(data: AudioRequest, current_user: dict = Depends(get_current_
         "model_id": "eleven_multilingual_v2",
         "language_code": "pt"
     }
+
     response = requests.post(url, json=payload, headers=headers)
+
     if response.status_code != 200:
         raise HTTPException(status_code=500, detail=response.text)
+
+    # Desconta crédito só após gerar com sucesso
+    if current_user["role"] != "admin":
+        deduct_credit(current_user["id"])
+
     return Response(content=response.content, media_type="audio/mpeg")
