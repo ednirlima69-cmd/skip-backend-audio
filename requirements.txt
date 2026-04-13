@@ -3,7 +3,8 @@ uvicorn[standard]
 requests
 psycopg2-binary
 bcrypt
-python-jose
+python-jose[cryptography]
 stripe
 num2words
 pydantic
+cloudinary
