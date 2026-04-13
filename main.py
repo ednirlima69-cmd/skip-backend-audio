@@ -253,9 +253,6 @@ def get_plans():
 def get_public_key():
     return {"public_key": MP_PUBLIC_KEY}
 
-# =========================
-# HISTÓRICO DE ÁUDIOS
-# =========================
 @app.get("/audio/history")
 def get_audio_history(current_user: dict = Depends(get_current_user)):
     conn = get_connection()
@@ -284,9 +281,6 @@ def get_audio_history(current_user: dict = Depends(get_current_user)):
         for row in rows
     ]
 
-# =========================
-# EXCLUIR ÁUDIO DO HISTÓRICO
-# =========================
 @app.delete("/audio/history/{audio_id}")
 def delete_audio(audio_id: int, current_user: dict = Depends(get_current_user)):
     conn = get_connection()
@@ -322,9 +316,6 @@ def delete_audio(audio_id: int, current_user: dict = Depends(get_current_user)):
 
     return {"message": "Áudio excluído com sucesso"}
 
-# =========================
-# CRIAR PAGAMENTO
-# =========================
 @app.post("/payment/create")
 def create_payment(data: PaymentRequest, current_user: dict = Depends(get_current_user)):
 
@@ -404,9 +395,6 @@ def create_payment(data: PaymentRequest, current_user: dict = Depends(get_curren
 
     return response_data
 
-# =========================
-# WEBHOOK MERCADO PAGO
-# =========================
 @app.post("/webhook/mp")
 async def webhook_mp(request: Request):
     body = await request.json()
@@ -450,9 +438,6 @@ async def webhook_mp(request: Request):
 
     return {"status": "ok"}
 
-# =========================
-# STATUS DO PAGAMENTO
-# =========================
 @app.get("/payment/status/{payment_id}")
 def payment_status(payment_id: str, current_user: dict = Depends(get_current_user)):
     headers = {"Authorization": f"Bearer {MP_ACCESS_TOKEN}"}
@@ -538,9 +523,6 @@ def test_audio():
         raise HTTPException(status_code=500, detail=response.text)
     return Response(content=response.content, media_type="audio/mpeg")
 
-# =========================
-# AUDIO PRINCIPAL COM CLOUDINARY
-# =========================
 @app.post("/audio/generate")
 def generate_audio(data: AudioRequest, current_user: dict = Depends(get_current_user)):
 
@@ -569,7 +551,6 @@ def generate_audio(data: AudioRequest, current_user: dict = Depends(get_current_
     if response.status_code != 200:
         raise HTTPException(status_code=500, detail=response.text)
 
-    # Salva no Cloudinary
     public_id = f"audio_{current_user['id']}_{uuid.uuid4().hex[:8]}"
     upload_result = cloudinary.uploader.upload(
         response.content,
