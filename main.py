@@ -29,6 +29,8 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
 MP_ACCESS_TOKEN = os.getenv("MP_ACCESS_TOKEN")
 MP_PUBLIC_KEY = os.getenv("MP_PUBLIC_KEY")
+RESEND_API_KEY = os.getenv("RESEND_API_KEY")
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "ednir-lima@hotmail.com")
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_DAYS = 30
@@ -95,6 +97,18 @@ def create_tables():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS support_tickets (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        nome TEXT,
+        email TEXT,
+        assunto TEXT,
+        mensagem TEXT,
+        status TEXT DEFAULT 'aberto',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
     conn.commit()
     cur.close()
     conn.close()
@@ -128,6 +142,12 @@ class UpdateUserRequest(BaseModel):
     plan: Optional[str] = None
     credits: Optional[int] = None
     role: Optional[str] = None
+
+class SupportRequest(BaseModel):
+    nome: str
+    email: str
+    assunto: str
+    mensagem: str
 
 def create_access_token(data: dict):
     to_encode = data.copy()
@@ -191,6 +211,23 @@ def save_audio_history(user_id, project_name, texto, tom, audio_url, cloudinary_
     cur.close()
     conn.close()
 
+def send_email(to: str, subject: str, html: str):
+    if not RESEND_API_KEY:
+        return
+    requests.post(
+        "https://api.resend.com/emails",
+        headers={
+            "Authorization": f"Bearer {RESEND_API_KEY}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "from": "AI E&K Generator PRO <onboarding@resend.dev>",
+            "to": [to],
+            "subject": subject,
+            "html": html
+        }
+    )
+
 @app.get("/")
 def root():
     return {"status": "AI E&K Generator PRO ONLINE"}
@@ -216,7 +253,78 @@ def get_public_key():
     return {"public_key": MP_PUBLIC_KEY}
 
 # =========================
-# ADMIN — MÉTRICAS REAIS
+# SUPORTE
+# =========================
+@app.post("/support")
+def create_support(data: SupportRequest, current_user: dict = Depends(get_current_user)):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO support_tickets (user_id, nome, email, assunto, mensagem)
+        VALUES (%s, %s, %s, %s, %s)
+    """, (current_user["id"], data.nome, data.email, data.assunto, data.mensagem))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    send_email(
+        to=ADMIN_EMAIL,
+        subject=f"[Suporte] {data.assunto} — {data.nome}",
+        html=f"""
+        <h2>Nova mensagem de suporte</h2>
+        <p><b>Nome:</b> {data.nome}</p>
+        <p><b>Email:</b> {data.email}</p>
+        <p><b>Assunto:</b> {data.assunto}</p>
+        <p><b>Mensagem:</b></p>
+        <p>{data.mensagem}</p>
+        <hr>
+        <p>Responda diretamente para: <a href="mailto:{data.email}">{data.email}</a></p>
+        """
+    )
+
+    return {"message": "Mensagem enviada com sucesso"}
+
+# =========================
+# ADMIN — SUPORTE
+# =========================
+@app.get("/admin/support")
+def admin_support(admin: dict = Depends(require_admin)):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, nome, email, assunto, mensagem, status, created_at
+        FROM support_tickets
+        ORDER BY created_at DESC
+    """)
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    return [
+        {
+            "id": row[0],
+            "nome": row[1],
+            "email": row[2],
+            "assunto": row[3],
+            "mensagem": row[4],
+            "status": row[5],
+            "created_at": row[6].strftime("%d/%m/%Y %H:%M")
+        }
+        for row in rows
+    ]
+
+@app.put("/admin/support/{ticket_id}")
+def update_support_status(ticket_id: int, admin: dict = Depends(require_admin)):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE support_tickets SET status = 'resolvido' WHERE id = %s", (ticket_id,))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"message": "Ticket resolvido"}
+
+# =========================
+# ADMIN — MÉTRICAS
 # =========================
 @app.get("/admin/stats")
 def admin_stats(admin: dict = Depends(require_admin)):
@@ -234,6 +342,9 @@ def admin_stats(admin: dict = Depends(require_admin)):
 
     cur.execute("SELECT COUNT(*) FROM payments WHERE status = 'approved'")
     total_payments = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM support_tickets WHERE status = 'aberto'")
+    open_tickets = cur.fetchone()[0]
 
     cur.execute("""
         SELECT DATE(created_at), COALESCE(SUM(amount), 0)
@@ -253,61 +364,35 @@ def admin_stats(admin: dict = Depends(require_admin)):
         "total_audios": total_audios,
         "total_revenue": float(total_revenue),
         "total_payments": total_payments,
+        "open_tickets": open_tickets,
         "revenue_chart": revenue_chart
     }
 
-# =========================
-# ADMIN — LISTAR USUÁRIOS
-# =========================
 @app.get("/admin/users")
 def admin_users(admin: dict = Depends(require_admin)):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
-        SELECT id, email, plan, credits, role, created_at
-        FROM users
-        ORDER BY created_at DESC
-    """)
+    cur.execute("SELECT id, email, plan, credits, role, created_at FROM users ORDER BY created_at DESC")
     rows = cur.fetchall()
     cur.close()
     conn.close()
+    return [{"id": row[0], "email": row[1], "plan": row[2], "credits": row[3], "role": row[4], "created_at": row[5].strftime("%d/%m/%Y")} for row in rows]
 
-    return [
-        {
-            "id": row[0],
-            "email": row[1],
-            "plan": row[2],
-            "credits": row[3],
-            "role": row[4],
-            "created_at": row[5].strftime("%d/%m/%Y")
-        }
-        for row in rows
-    ]
-
-# =========================
-# ADMIN — EDITAR USUÁRIO
-# =========================
 @app.put("/admin/users/{user_id}")
 def admin_update_user(user_id: int, data: UpdateUserRequest, admin: dict = Depends(require_admin)):
     conn = get_connection()
     cur = conn.cursor()
-
     if data.plan:
         cur.execute("UPDATE users SET plan = %s WHERE id = %s", (data.plan, user_id))
     if data.credits is not None:
         cur.execute("UPDATE users SET credits = %s WHERE id = %s", (data.credits, user_id))
     if data.role:
         cur.execute("UPDATE users SET role = %s WHERE id = %s", (data.role, user_id))
-
     conn.commit()
     cur.close()
     conn.close()
-
     return {"message": "Usuário atualizado"}
 
-# =========================
-# ADMIN — LISTAR PAGAMENTOS
-# =========================
 @app.get("/admin/payments")
 def admin_payments(admin: dict = Depends(require_admin)):
     conn = get_connection()
@@ -322,18 +407,7 @@ def admin_payments(admin: dict = Depends(require_admin)):
     rows = cur.fetchall()
     cur.close()
     conn.close()
-
-    return [
-        {
-            "id": row[0],
-            "email": row[1],
-            "plan": row[2],
-            "amount": float(row[3]),
-            "status": row[4],
-            "created_at": row[5].strftime("%d/%m/%Y %H:%M")
-        }
-        for row in rows
-    ]
+    return [{"id": row[0], "email": row[1], "plan": row[2], "amount": float(row[3]), "status": row[4], "created_at": row[5].strftime("%d/%m/%Y %H:%M")} for row in rows]
 
 @app.get("/audio/history")
 def get_audio_history(current_user: dict = Depends(get_current_user)):
@@ -349,11 +423,7 @@ def get_audio_history(current_user: dict = Depends(get_current_user)):
     rows = cur.fetchall()
     cur.close()
     conn.close()
-
-    return [
-        {"id": row[0], "project_name": row[1], "texto": row[2], "tom": row[3], "audio_url": row[4], "created_at": row[5].strftime("%d/%m/%Y %H:%M")}
-        for row in rows
-    ]
+    return [{"id": row[0], "project_name": row[1], "texto": row[2], "tom": row[3], "audio_url": row[4], "created_at": row[5].strftime("%d/%m/%Y %H:%M")} for row in rows]
 
 @app.delete("/audio/history/{audio_id}")
 def delete_audio(audio_id: int, current_user: dict = Depends(get_current_user)):
@@ -361,42 +431,33 @@ def delete_audio(audio_id: int, current_user: dict = Depends(get_current_user)):
     cur = conn.cursor()
     cur.execute("SELECT cloudinary_public_id, user_id FROM audio_history WHERE id = %s", (audio_id,))
     row = cur.fetchone()
-
     if not row:
         raise HTTPException(status_code=404, detail="Áudio não encontrado")
-
     cloudinary_public_id, owner_id = row
-
     if owner_id != current_user["id"] and current_user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Sem permissão")
-
     if cloudinary_public_id:
         try:
             cloudinary.uploader.destroy(cloudinary_public_id, resource_type="video")
         except Exception:
             pass
-
     cur.execute("DELETE FROM audio_history WHERE id = %s", (audio_id,))
     conn.commit()
     cur.close()
     conn.close()
-
     return {"message": "Áudio excluído com sucesso"}
 
 @app.post("/payment/create")
 def create_payment(data: PaymentRequest, current_user: dict = Depends(get_current_user)):
     if data.plan not in PLANS:
         raise HTTPException(status_code=400, detail="Plano inválido")
-
     plan_data = PLANS[data.plan]
     idempotency_key = str(uuid.uuid4())
-
     headers = {
         "Authorization": f"Bearer {MP_ACCESS_TOKEN}",
         "Content-Type": "application/json",
         "X-Idempotency-Key": idempotency_key
     }
-
     payload = {
         "transaction_amount": float(plan_data["price"]),
         "description": plan_data["name"],
@@ -404,7 +465,6 @@ def create_payment(data: PaymentRequest, current_user: dict = Depends(get_curren
         "payer": {"email": current_user["email"]},
         "metadata": {"user_id": str(current_user["id"]), "plan": data.plan}
     }
-
     if data.payment_method == "credit_card":
         if not data.token:
             raise HTTPException(status_code=400, detail="Token do cartão obrigatório")
@@ -412,67 +472,50 @@ def create_payment(data: PaymentRequest, current_user: dict = Depends(get_curren
         payload["installments"] = data.installments or 1
         if data.issuer_id:
             payload["issuer_id"] = data.issuer_id
-
     response = requests.post("https://api.mercadopago.com/v1/payments", json=payload, headers=headers)
     result = response.json()
-
     if response.status_code not in [200, 201]:
         raise HTTPException(status_code=400, detail=result.get("message", "Erro ao criar pagamento"))
-
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO payments (user_id, mp_payment_id, plan, amount, status)
-        VALUES (%s, %s, %s, %s, %s)
-    """, (current_user["id"], str(result["id"]), data.plan, plan_data["price"], result["status"]))
+    cur.execute("INSERT INTO payments (user_id, mp_payment_id, plan, amount, status) VALUES (%s, %s, %s, %s, %s)",
+        (current_user["id"], str(result["id"]), data.plan, plan_data["price"], result["status"]))
     conn.commit()
     cur.close()
     conn.close()
-
     if result["status"] == "approved":
         apply_plan(current_user["id"], data.plan)
-
     response_data = {"payment_id": result["id"], "status": result["status"], "plan": data.plan}
-
     if data.payment_method == "pix":
         pix_data = result.get("point_of_interaction", {}).get("transaction_data", {})
         response_data["pix_qr_code"] = pix_data.get("qr_code")
         response_data["pix_qr_code_base64"] = pix_data.get("qr_code_base64")
-
     return response_data
 
 @app.post("/webhook/mp")
 async def webhook_mp(request: Request):
     body = await request.json()
-
     if body.get("type") != "payment":
         return {"status": "ignored"}
-
     payment_id = body.get("data", {}).get("id")
     if not payment_id:
         return {"status": "no payment id"}
-
     headers = {"Authorization": f"Bearer {MP_ACCESS_TOKEN}"}
     response = requests.get(f"https://api.mercadopago.com/v1/payments/{payment_id}", headers=headers)
     payment = response.json()
-
     if payment.get("status") != "approved":
         return {"status": "not approved"}
-
     metadata = payment.get("metadata", {})
     user_id = metadata.get("user_id")
     plan = metadata.get("plan")
-
     if not user_id or not plan:
         return {"status": "missing metadata"}
-
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("UPDATE payments SET status = 'approved' WHERE mp_payment_id = %s", (str(payment_id),))
     conn.commit()
     cur.close()
     conn.close()
-
     apply_plan(int(user_id), plan)
     return {"status": "ok"}
 
@@ -506,15 +549,11 @@ def login(data: LoginRequest):
     user = cur.fetchone()
     cur.close()
     conn.close()
-
     if not user:
         raise HTTPException(status_code=400, detail="Usuário não encontrado")
-
     user_id, password_hash, role = user
-
     if not bcrypt.checkpw(data.password.encode(), password_hash.encode()):
         raise HTTPException(status_code=400, detail="Senha inválida")
-
     token = create_access_token({"user_id": user_id, "role": role})
     return {"access_token": token, "token_type": "bearer"}
 
@@ -544,29 +583,19 @@ def generate_audio(data: AudioRequest, current_user: dict = Depends(get_current_
     if current_user["role"] != "admin":
         if current_user["credits"] <= 0:
             raise HTTPException(status_code=402, detail="Créditos esgotados. Faça upgrade do seu plano para continuar.")
-
     voice_id = VOICES.get(data.tom, VOICES["promocional"])
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
     headers = {"xi-api-key": ELEVEN_API_KEY, "Content-Type": "application/json", "Accept": "audio/mpeg"}
     payload = {"text": data.texto, "model_id": "eleven_multilingual_v2", "language_code": "pt"}
-
     response = requests.post(url, json=payload, headers=headers)
     if response.status_code != 200:
         raise HTTPException(status_code=500, detail=response.text)
-
     public_id = f"audio_{current_user['id']}_{uuid.uuid4().hex[:8]}"
     upload_result = cloudinary.uploader.upload(
-        response.content,
-        resource_type="video",
-        public_id=public_id,
-        folder="ek_generator",
-        format="mp3"
+        response.content, resource_type="video", public_id=public_id, folder="ek_generator", format="mp3"
     )
     audio_url = upload_result.get("secure_url")
-
     if current_user["role"] != "admin":
         deduct_credit(current_user["id"])
-
     save_audio_history(current_user["id"], data.project_name, data.texto, data.tom, audio_url, upload_result.get("public_id"))
-
     return {"audio_url": audio_url, "message": "Áudio gerado com sucesso"}
