@@ -611,7 +611,7 @@ def generate_audio(data: AudioRequest, current_user: dict = Depends(get_current_
         deduct_credit(current_user["id"])
 
     save_audio_history(current_user["id"], data.project_name, data.texto, data.tom, audio_url, upload_result.get("public_id"))
-    return {"audio_url": audio_url, "message": "Áudio gerado com sucesso"}from fastapi import FastAPI, HTTPException, Depends, Request
+    return {"audio_url": audio_url, "message": "Áudio gerado com sucesso"} fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import Response
