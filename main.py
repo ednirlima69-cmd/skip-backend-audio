@@ -48,7 +48,7 @@ VOICES = {
     "institucional": "Qrdut83w0Cr152Yb4Xn3",
     "calmo": "ORgG8rwdAiMYRug8RJwR",
     "entusiasta": "MZxV5lN3cv7hi1376O0m",
-    "neutro": "ZqE9vIHPcrC35dZv0Svu"
+    "neutro": "czvzJwIVS2asEKnthV40"
 }
 
 PLAN_RULES = {
