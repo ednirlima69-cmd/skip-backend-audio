@@ -8,3 +8,4 @@ stripe
 num2words
 pydantic
 cloudinary
+pydub
