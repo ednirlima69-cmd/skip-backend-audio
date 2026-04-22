@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 import uuid
 import cloudinary
 import cloudinary.uploader
+import secrets
 
 app = FastAPI()
 
@@ -31,6 +32,7 @@ MP_ACCESS_TOKEN = os.getenv("MP_ACCESS_TOKEN")
 MP_PUBLIC_KEY = os.getenv("MP_PUBLIC_KEY")
 RESEND_API_KEY = os.getenv("RESEND_API_KEY")
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "ednir-lima@hotmail.com")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://ai-ek-generator-pro-b35e6--preview.goskip.app")
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_DAYS = 30
@@ -52,22 +54,10 @@ VOICES = {
 }
 
 PLAN_RULES = {
-    "free": {
-        "voices": ["calmo", "neutro"],
-        "max_chars": 300
-    },
-    "avulso": {
-        "voices": ["calmo", "neutro"],
-        "max_chars": 300
-    },
-    "pro": {
-        "voices": ["calmo", "neutro", "institucional"],
-        "max_chars": 600
-    },
-    "premium": {
-        "voices": ["promocional", "institucional", "calmo", "entusiasta", "neutro"],
-        "max_chars": 99999
-    }
+    "free": {"voices": ["calmo", "neutro"], "max_chars": 300},
+    "avulso": {"voices": ["calmo", "neutro"], "max_chars": 300},
+    "pro": {"voices": ["calmo", "neutro", "institucional"], "max_chars": 600},
+    "premium": {"voices": ["promocional", "institucional", "calmo", "entusiasta", "neutro"], "max_chars": 99999}
 }
 
 PLANS = {
@@ -130,6 +120,16 @@ def create_tables():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS password_resets (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        token TEXT UNIQUE NOT NULL,
+        expires_at TIMESTAMP NOT NULL,
+        used BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
     conn.commit()
     cur.close()
     conn.close()
@@ -176,6 +176,15 @@ class SupportRequest(BaseModel):
     email: str
     assunto: str
     mensagem: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
 
 
 def create_access_token(data: dict):
@@ -322,10 +331,92 @@ def voices(current_user: dict = Depends(get_current_user)):
         {"id": "neutro", "name": "Neutro"}
     ]
 
-    return [
-        {**v, "locked": v["id"] not in allowed}
-        for v in all_voices
-    ]
+    return [{**v, "locked": v["id"] not in allowed} for v in all_voices]
+
+
+# =========================
+# RECUPERAR SENHA
+# =========================
+@app.post("/auth/forgot-password")
+def forgot_password(data: ForgotPasswordRequest):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id, email FROM users WHERE email = %s", (data.email,))
+    user = cur.fetchone()
+
+    if not user:
+        cur.close()
+        conn.close()
+        return {"message": "Se o email existir, você receberá o link em breve"}
+
+    user_id, email = user
+
+    token = secrets.token_urlsafe(32)
+    expires_at = datetime.utcnow() + timedelta(hours=1)
+
+    cur.execute("""
+        INSERT INTO password_resets (user_id, token, expires_at)
+        VALUES (%s, %s, %s)
+    """, (user_id, token, expires_at))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    reset_link = f"{FRONTEND_URL}/redefinir-senha?token={token}"
+
+    send_email(
+        to=email,
+        subject="Redefinição de senha — AI E&K Generator PRO",
+        html=f"""
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #1a1a2e;">Redefinição de senha</h2>
+            <p>Você solicitou a redefinição da sua senha no <b>AI E&K Generator PRO</b>.</p>
+            <p>Clique no botão abaixo para criar uma nova senha:</p>
+            <a href="{reset_link}" style="display: inline-block; background: #0066ff; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold; margin: 16px 0;">
+                Redefinir minha senha
+            </a>
+            <p style="color: #666; font-size: 13px;">Este link expira em 1 hora.</p>
+            <p style="color: #666; font-size: 13px;">Se você não solicitou isso, ignore este email.</p>
+        </div>
+        """
+    )
+
+    return {"message": "Se o email existir, você receberá o link em breve"}
+
+
+@app.post("/auth/reset-password")
+def reset_password(data: ResetPasswordRequest):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT id, user_id, expires_at, used
+        FROM password_resets
+        WHERE token = %s
+    """, (data.token,))
+    reset = cur.fetchone()
+
+    if not reset:
+        raise HTTPException(status_code=400, detail="Token inválido")
+
+    reset_id, user_id, expires_at, used = reset
+
+    if used:
+        raise HTTPException(status_code=400, detail="Token já utilizado")
+
+    if datetime.utcnow() > expires_at:
+        raise HTTPException(status_code=400, detail="Token expirado. Solicite um novo link.")
+
+    hashed = bcrypt.hashpw(data.new_password.encode(), bcrypt.gensalt()).decode()
+
+    cur.execute("UPDATE users SET password_hash = %s WHERE id = %s", (hashed, user_id))
+    cur.execute("UPDATE password_resets SET used = TRUE WHERE id = %s", (reset_id,))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return {"message": "Senha redefinida com sucesso"}
 
 
 @app.post("/support")
@@ -363,24 +454,12 @@ def admin_support(admin: dict = Depends(require_admin)):
     cur = conn.cursor()
     cur.execute("""
         SELECT id, nome, email, assunto, mensagem, status, created_at
-        FROM support_tickets
-        ORDER BY created_at DESC
+        FROM support_tickets ORDER BY created_at DESC
     """)
     rows = cur.fetchall()
     cur.close()
     conn.close()
-    return [
-        {
-            "id": row[0],
-            "nome": row[1],
-            "email": row[2],
-            "assunto": row[3],
-            "mensagem": row[4],
-            "status": row[5],
-            "created_at": row[6].strftime("%d/%m/%Y %H:%M")
-        }
-        for row in rows
-    ]
+    return [{"id": row[0], "nome": row[1], "email": row[2], "assunto": row[3], "mensagem": row[4], "status": row[5], "created_at": row[6].strftime("%d/%m/%Y %H:%M")} for row in rows]
 
 
 @app.put("/admin/support/{ticket_id}")
@@ -398,43 +477,27 @@ def update_support_status(ticket_id: int, admin: dict = Depends(require_admin)):
 def admin_stats(admin: dict = Depends(require_admin)):
     conn = get_connection()
     cur = conn.cursor()
-
     cur.execute("SELECT COUNT(*) FROM users WHERE role != 'admin'")
     total_users = cur.fetchone()[0]
-
     cur.execute("SELECT COUNT(*) FROM audio_history")
     total_audios = cur.fetchone()[0]
-
     cur.execute("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE status = 'approved'")
     total_revenue = cur.fetchone()[0]
-
     cur.execute("SELECT COUNT(*) FROM payments WHERE status = 'approved'")
     total_payments = cur.fetchone()[0]
-
     cur.execute("SELECT COUNT(*) FROM support_tickets WHERE status = 'aberto'")
     open_tickets = cur.fetchone()[0]
-
     cur.execute("""
         SELECT DATE(created_at), COALESCE(SUM(amount), 0)
-        FROM payments
-        WHERE status = 'approved'
+        FROM payments WHERE status = 'approved'
         AND created_at >= NOW() - INTERVAL '30 days'
         GROUP BY DATE(created_at)
         ORDER BY DATE(created_at)
     """)
     revenue_chart = [{"date": str(row[0]), "value": float(row[1])} for row in cur.fetchall()]
-
     cur.close()
     conn.close()
-
-    return {
-        "total_users": total_users,
-        "total_audios": total_audios,
-        "total_revenue": float(total_revenue),
-        "total_payments": total_payments,
-        "open_tickets": open_tickets,
-        "revenue_chart": revenue_chart
-    }
+    return {"total_users": total_users, "total_audios": total_audios, "total_revenue": float(total_revenue), "total_payments": total_payments, "open_tickets": open_tickets, "revenue_chart": revenue_chart}
 
 
 @app.get("/admin/users")
@@ -445,17 +508,7 @@ def admin_users(admin: dict = Depends(require_admin)):
     rows = cur.fetchall()
     cur.close()
     conn.close()
-    return [
-        {
-            "id": row[0],
-            "email": row[1],
-            "plan": row[2],
-            "credits": row[3],
-            "role": row[4],
-            "created_at": row[5].strftime("%d/%m/%Y")
-        }
-        for row in rows
-    ]
+    return [{"id": row[0], "email": row[1], "plan": row[2], "credits": row[3], "role": row[4], "created_at": row[5].strftime("%d/%m/%Y")} for row in rows]
 
 
 @app.put("/admin/users/{user_id}")
@@ -480,25 +533,13 @@ def admin_payments(admin: dict = Depends(require_admin)):
     cur = conn.cursor()
     cur.execute("""
         SELECT p.id, u.email, p.plan, p.amount, p.status, p.created_at
-        FROM payments p
-        JOIN users u ON p.user_id = u.id
-        ORDER BY p.created_at DESC
-        LIMIT 100
+        FROM payments p JOIN users u ON p.user_id = u.id
+        ORDER BY p.created_at DESC LIMIT 100
     """)
     rows = cur.fetchall()
     cur.close()
     conn.close()
-    return [
-        {
-            "id": row[0],
-            "email": row[1],
-            "plan": row[2],
-            "amount": float(row[3]),
-            "status": row[4],
-            "created_at": row[5].strftime("%d/%m/%Y %H:%M")
-        }
-        for row in rows
-    ]
+    return [{"id": row[0], "email": row[1], "plan": row[2], "amount": float(row[3]), "status": row[4], "created_at": row[5].strftime("%d/%m/%Y %H:%M")} for row in rows]
 
 
 @app.get("/audio/history")
@@ -507,25 +548,13 @@ def get_audio_history(current_user: dict = Depends(get_current_user)):
     cur = conn.cursor()
     cur.execute("""
         SELECT id, project_name, texto, tom, audio_url, created_at
-        FROM audio_history
-        WHERE user_id = %s
-        ORDER BY created_at DESC
-        LIMIT 50
+        FROM audio_history WHERE user_id = %s
+        ORDER BY created_at DESC LIMIT 50
     """, (current_user["id"],))
     rows = cur.fetchall()
     cur.close()
     conn.close()
-    return [
-        {
-            "id": row[0],
-            "project_name": row[1],
-            "texto": row[2],
-            "tom": row[3],
-            "audio_url": row[4],
-            "created_at": row[5].strftime("%d/%m/%Y %H:%M")
-        }
-        for row in rows
-    ]
+    return [{"id": row[0], "project_name": row[1], "texto": row[2], "tom": row[3], "audio_url": row[4], "created_at": row[5].strftime("%d/%m/%Y %H:%M")} for row in rows]
 
 
 @app.delete("/audio/history/{audio_id}")
@@ -555,16 +584,9 @@ def delete_audio(audio_id: int, current_user: dict = Depends(get_current_user)):
 def create_payment(data: PaymentRequest, current_user: dict = Depends(get_current_user)):
     if data.plan not in PLANS:
         raise HTTPException(status_code=400, detail="Plano inválido")
-
     plan_data = PLANS[data.plan]
     idempotency_key = str(uuid.uuid4())
-
-    headers = {
-        "Authorization": f"Bearer {MP_ACCESS_TOKEN}",
-        "Content-Type": "application/json",
-        "X-Idempotency-Key": idempotency_key
-    }
-
+    headers = {"Authorization": f"Bearer {MP_ACCESS_TOKEN}", "Content-Type": "application/json", "X-Idempotency-Key": idempotency_key}
     payload = {
         "transaction_amount": float(plan_data["price"]),
         "description": plan_data["name"],
@@ -572,7 +594,6 @@ def create_payment(data: PaymentRequest, current_user: dict = Depends(get_curren
         "payer": {"email": current_user["email"]},
         "metadata": {"user_id": str(current_user["id"]), "plan": data.plan}
     }
-
     if data.payment_method == "credit_card":
         if not data.token:
             raise HTTPException(status_code=400, detail="Token do cartão obrigatório")
@@ -580,41 +601,24 @@ def create_payment(data: PaymentRequest, current_user: dict = Depends(get_curren
         payload["installments"] = data.installments or 1
         if data.issuer_id:
             payload["issuer_id"] = data.issuer_id
-
-    response = requests.post(
-        "https://api.mercadopago.com/v1/payments",
-        json=payload,
-        headers=headers
-    )
+    response = requests.post("https://api.mercadopago.com/v1/payments", json=payload, headers=headers)
     result = response.json()
-
     if response.status_code not in [200, 201]:
         raise HTTPException(status_code=400, detail=result.get("message", "Erro ao criar pagamento"))
-
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO payments (user_id, mp_payment_id, plan, amount, status)
-        VALUES (%s, %s, %s, %s, %s)
-    """, (current_user["id"], str(result["id"]), data.plan, plan_data["price"], result["status"]))
+    cur.execute("INSERT INTO payments (user_id, mp_payment_id, plan, amount, status) VALUES (%s, %s, %s, %s, %s)",
+        (current_user["id"], str(result["id"]), data.plan, plan_data["price"], result["status"]))
     conn.commit()
     cur.close()
     conn.close()
-
     if result["status"] == "approved":
         apply_plan(current_user["id"], data.plan)
-
-    response_data = {
-        "payment_id": result["id"],
-        "status": result["status"],
-        "plan": data.plan
-    }
-
+    response_data = {"payment_id": result["id"], "status": result["status"], "plan": data.plan}
     if data.payment_method == "pix":
         pix_data = result.get("point_of_interaction", {}).get("transaction_data", {})
         response_data["pix_qr_code"] = pix_data.get("qr_code")
         response_data["pix_qr_code_base64"] = pix_data.get("qr_code_base64")
-
     return response_data
 
 
@@ -627,10 +631,7 @@ async def webhook_mp(request: Request):
     if not payment_id:
         return {"status": "no payment id"}
     headers = {"Authorization": f"Bearer {MP_ACCESS_TOKEN}"}
-    response = requests.get(
-        f"https://api.mercadopago.com/v1/payments/{payment_id}",
-        headers=headers
-    )
+    response = requests.get(f"https://api.mercadopago.com/v1/payments/{payment_id}", headers=headers)
     payment = response.json()
     if payment.get("status") != "approved":
         return {"status": "not approved"}
@@ -652,16 +653,9 @@ async def webhook_mp(request: Request):
 @app.get("/payment/status/{payment_id}")
 def payment_status(payment_id: str, current_user: dict = Depends(get_current_user)):
     headers = {"Authorization": f"Bearer {MP_ACCESS_TOKEN}"}
-    response = requests.get(
-        f"https://api.mercadopago.com/v1/payments/{payment_id}",
-        headers=headers
-    )
+    response = requests.get(f"https://api.mercadopago.com/v1/payments/{payment_id}", headers=headers)
     result = response.json()
-    return {
-        "payment_id": payment_id,
-        "status": result.get("status"),
-        "status_detail": result.get("status_detail")
-    }
+    return {"payment_id": payment_id, "status": result.get("status"), "status_detail": result.get("status_detail")}
 
 
 @app.post("/register")
@@ -670,10 +664,7 @@ def register(user: UserCreate):
     conn = get_connection()
     cur = conn.cursor()
     try:
-        cur.execute(
-            "INSERT INTO users (email,password_hash,plan,credits,role) VALUES (%s,%s,'free',10,'user')",
-            (user.email, hashed)
-        )
+        cur.execute("INSERT INTO users (email,password_hash,plan,credits,role) VALUES (%s,%s,'free',10,'user')", (user.email, hashed))
         conn.commit()
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -704,16 +695,8 @@ def login(data: LoginRequest):
 def test_audio():
     voice_id = VOICES["calmo"]
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-    headers = {
-        "xi-api-key": ELEVEN_API_KEY,
-        "Content-Type": "application/json",
-        "Accept": "audio/mpeg"
-    }
-    payload = {
-        "text": "Teste direto de voz funcionando",
-        "model_id": "eleven_multilingual_v2",
-        "language_code": "pt"
-    }
+    headers = {"xi-api-key": ELEVEN_API_KEY, "Content-Type": "application/json", "Accept": "audio/mpeg"}
+    payload = {"text": "Teste direto de voz funcionando", "model_id": "eleven_multilingual_v2", "language_code": "pt"}
     response = requests.post(url, json=payload, headers=headers)
     if response.status_code != 200:
         raise HTTPException(status_code=500, detail=response.text)
@@ -727,37 +710,20 @@ def generate_audio(data: AudioRequest, current_user: dict = Depends(get_current_
 
     if not is_admin:
         if current_user["credits"] <= 0:
-            raise HTTPException(
-                status_code=402,
-                detail="Créditos esgotados. Faça upgrade do seu plano para continuar."
-            )
+            raise HTTPException(status_code=402, detail="Créditos esgotados. Faça upgrade do seu plano para continuar.")
 
         rules = PLAN_RULES.get(plan, PLAN_RULES["free"])
 
         if data.tom not in rules["voices"]:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Voz '{data.tom}' não disponível no seu plano. Faça upgrade para acessar."
-            )
+            raise HTTPException(status_code=403, detail=f"Voz '{data.tom}' não disponível no seu plano. Faça upgrade para acessar.")
 
         if len(data.texto) > rules["max_chars"]:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Texto excede o limite de {rules['max_chars']} caracteres do seu plano."
-            )
+            raise HTTPException(status_code=403, detail=f"Texto excede o limite de {rules['max_chars']} caracteres do seu plano.")
 
     voice_id = VOICES.get(data.tom, VOICES["calmo"])
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-    headers = {
-        "xi-api-key": ELEVEN_API_KEY,
-        "Content-Type": "application/json",
-        "Accept": "audio/mpeg"
-    }
-    payload = {
-        "text": data.texto,
-        "model_id": "eleven_multilingual_v2",
-        "language_code": "pt"
-    }
+    headers = {"xi-api-key": ELEVEN_API_KEY, "Content-Type": "application/json", "Accept": "audio/mpeg"}
+    payload = {"text": data.texto, "model_id": "eleven_multilingual_v2", "language_code": "pt"}
 
     response = requests.post(url, json=payload, headers=headers)
     if response.status_code != 200:
