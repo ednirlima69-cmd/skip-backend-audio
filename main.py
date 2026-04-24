@@ -823,24 +823,8 @@ async def generate_audio_with_music(
 
     save_audio_history(current_user["id"], project_name, texto, tom, audio_url, upload_result.get("public_id"), True)
 
-    return {"audio_url": audio_url, "message": "Áudio com música gerado com sucesso"} fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi.responses import Response
-from pydantic import BaseModel
-from typing import Optional
-import requests
-import os
-import psycopg2
-import bcrypt
-from jose import JWTError, jwt
-from datetime import datetime, timedelta
-import uuid
-import cloudinary
-import cloudinary.uploader
-import secrets
-
-app = FastAPI()
-
+    return {"audio_url": audio_url, "message": "Áudio com música gerado com sucesso"} 
+    
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
