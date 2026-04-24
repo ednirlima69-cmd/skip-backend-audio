@@ -305,6 +305,8 @@ def mix_audio(voice_bytes: bytes, music_bytes: bytes) -> bytes:
     output = io.BytesIO()
     final.export(output, format="mp3")
     return output.getvalue()
+
+
     @app.get("/")
 def root():
     return {"status": "AI E&K Generator PRO ONLINE"}
