@@ -307,7 +307,7 @@ def mix_audio(voice_bytes: bytes, music_bytes: bytes) -> bytes:
     return output.getvalue()
 
 
-    @app.get("/")
+@app.get("/")
 def root():
     return {"status": "AI E&K Generator PRO ONLINE"}
 
