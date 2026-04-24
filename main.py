@@ -16,6 +16,7 @@ import cloudinary.uploader
 import secrets
 from pydub import AudioSegment
 import io
+import re
 
 app = FastAPI()
 
@@ -282,25 +283,60 @@ def send_email(to: str, subject: str, html: str):
     )
 
 
+def prepare_text_for_tts(text: str) -> str:
+    def convert_currency(match):
+        value = match.group(0)
+        value = value.replace("R$", "").replace("R$ ", "").strip()
+        value = value.replace(".", "").replace(",", ".")
+        try:
+            amount = float(value)
+            reais = int(amount)
+            centavos = round((amount - reais) * 100)
+            if centavos > 0:
+                return f"{reais} reais e {centavos} centavos"
+            return f"{reais} reais"
+        except Exception:
+            return match.group(0)
+
+    def convert_percentage(match):
+        value = match.group(1)
+        return f"{value} por cento"
+
+    def convert_number(match):
+        value = match.group(0).replace(".", "")
+        try:
+            return str(int(value))
+        except Exception:
+            return match.group(0)
+
+    text = re.sub(r"R\$\s?[\d.,]+", convert_currency, text)
+    text = re.sub(r"(\d+)%", convert_percentage, text)
+    text = re.sub(r"\d{1,3}(?:\.\d{3})+", convert_number, text)
+
+    return text
+
+
 def mix_audio(voice_bytes: bytes, music_bytes: bytes) -> bytes:
     voice = AudioSegment.from_mp3(io.BytesIO(voice_bytes))
     music = AudioSegment.from_file(io.BytesIO(music_bytes))
 
-    music = music - 10
-
-    if len(music) < len(voice) + 4000:
-        loops = (len(voice) + 4000) // len(music) + 1
+    total_duration = len(voice) + 6000
+    if len(music) < total_duration:
+        loops = total_duration // len(music) + 1
         music = music * loops
 
-    music_intro = music[:2000].fade_in(1000)
-    music_under_voice = music[2000:2000 + len(voice)] - 8
-    music_outro = music[2000 + len(voice):2000 + len(voice) + 3000].fade_out(2000)
+    music_intro = music[:3000].fade_in(500)
+    music_under_voice = music[3000:3000 + len(voice)] - 15
+    music_outro = music[3000 + len(voice):3000 + len(voice) + 4000]
+    music_outro = music_outro + 8
+    music_outro = music_outro.fade_out(3000)
 
     background = music_intro + music_under_voice + music_outro
 
-    voice_with_intro = AudioSegment.silent(duration=2000) + voice
+    silence = AudioSegment.silent(duration=3000)
+    voice_with_delay = silence + voice
 
-    final = background.overlay(voice_with_intro)
+    final = background.overlay(voice_with_delay)
 
     output = io.BytesIO()
     final.export(output, format="mp3")
@@ -341,10 +377,8 @@ def voices(current_user: dict = Depends(get_current_user)):
     plan = current_user["plan"]
     if current_user["role"] == "admin":
         plan = "premium"
-
     rules = PLAN_RULES.get(plan, PLAN_RULES["free"])
     allowed = rules["voices"]
-
     all_voices = [
         {"id": "promocional", "name": "Promocional"},
         {"id": "institucional", "name": "Institucional"},
@@ -352,7 +386,6 @@ def voices(current_user: dict = Depends(get_current_user)):
         {"id": "entusiasta", "name": "Entusiasta"},
         {"id": "neutro", "name": "Neutro"}
     ]
-
     return [{**v, "locked": v["id"] not in allowed} for v in all_voices]
 
 
@@ -362,26 +395,18 @@ def forgot_password(data: ForgotPasswordRequest):
     cur = conn.cursor()
     cur.execute("SELECT id, email FROM users WHERE email = %s", (data.email,))
     user = cur.fetchone()
-
     if not user:
         cur.close()
         conn.close()
         return {"message": "Se o email existir, voce recebera o link em breve"}
-
     user_id, email = user
     token = secrets.token_urlsafe(32)
     expires_at = datetime.utcnow() + timedelta(hours=1)
-
-    cur.execute("""
-        INSERT INTO password_resets (user_id, token, expires_at)
-        VALUES (%s, %s, %s)
-    """, (user_id, token, expires_at))
+    cur.execute("INSERT INTO password_resets (user_id, token, expires_at) VALUES (%s, %s, %s)", (user_id, token, expires_at))
     conn.commit()
     cur.close()
     conn.close()
-
     reset_link = f"{FRONTEND_URL}/redefinir-senha?token={token}"
-
     send_email(
         to=email,
         subject="Redefinicao de senha - AI E&K Generator PRO",
@@ -389,16 +414,13 @@ def forgot_password(data: ForgotPasswordRequest):
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
             <h2 style="color: #1a1a2e;">Redefinicao de senha</h2>
             <p>Voce solicitou a redefinicao da sua senha no AI E&K Generator PRO.</p>
-            <p>Clique no botao abaixo para criar uma nova senha:</p>
             <a href="{reset_link}" style="display:inline-block;background:#0066ff;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;margin:16px 0;">
                 Redefinir minha senha
             </a>
             <p style="color:#666;font-size:13px;">Este link expira em 1 hora.</p>
-            <p style="color:#666;font-size:13px;">Se voce nao solicitou isso, ignore este email.</p>
         </div>
         """
     )
-
     return {"message": "Se o email existir, voce recebera o link em breve"}
 
 
@@ -406,32 +428,21 @@ def forgot_password(data: ForgotPasswordRequest):
 def reset_password(data: ResetPasswordRequest):
     conn = get_connection()
     cur = conn.cursor()
-
-    cur.execute("""
-        SELECT id, user_id, expires_at, used
-        FROM password_resets WHERE token = %s
-    """, (data.token,))
+    cur.execute("SELECT id, user_id, expires_at, used FROM password_resets WHERE token = %s", (data.token,))
     reset = cur.fetchone()
-
     if not reset:
         raise HTTPException(status_code=400, detail="Token invalido")
-
     reset_id, user_id, expires_at, used = reset
-
     if used:
         raise HTTPException(status_code=400, detail="Token ja utilizado")
-
     if datetime.utcnow() > expires_at:
         raise HTTPException(status_code=400, detail="Token expirado. Solicite um novo link.")
-
     hashed = bcrypt.hashpw(data.new_password.encode(), bcrypt.gensalt()).decode()
-
     cur.execute("UPDATE users SET password_hash = %s WHERE id = %s", (hashed, user_id))
     cur.execute("UPDATE password_resets SET used = TRUE WHERE id = %s", (reset_id,))
     conn.commit()
     cur.close()
     conn.close()
-
     return {"message": "Senha redefinida com sucesso"}
 
 
@@ -439,14 +450,11 @@ def reset_password(data: ResetPasswordRequest):
 def create_support(data: SupportRequest, current_user: dict = Depends(get_current_user)):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO support_tickets (user_id, nome, email, assunto, mensagem)
-        VALUES (%s, %s, %s, %s, %s)
-    """, (current_user["id"], data.nome, data.email, data.assunto, data.mensagem))
+    cur.execute("INSERT INTO support_tickets (user_id, nome, email, assunto, mensagem) VALUES (%s, %s, %s, %s, %s)",
+        (current_user["id"], data.nome, data.email, data.assunto, data.mensagem))
     conn.commit()
     cur.close()
     conn.close()
-
     send_email(
         to=ADMIN_EMAIL,
         subject=f"[Suporte] {data.assunto} - {data.nome}",
@@ -468,10 +476,7 @@ def create_support(data: SupportRequest, current_user: dict = Depends(get_curren
 def admin_support(admin: dict = Depends(require_admin)):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
-        SELECT id, nome, email, assunto, mensagem, status, created_at
-        FROM support_tickets ORDER BY created_at DESC
-    """)
+    cur.execute("SELECT id, nome, email, assunto, mensagem, status, created_at FROM support_tickets ORDER BY created_at DESC")
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -729,14 +734,15 @@ def generate_audio(data: AudioRequest, current_user: dict = Depends(get_current_
             raise HTTPException(status_code=402, detail="Creditos esgotados. Faca upgrade do seu plano para continuar.")
         rules = PLAN_RULES.get(plan, PLAN_RULES["free"])
         if data.tom not in rules["voices"]:
-            raise HTTPException(status_code=403, detail=f"Voz nao disponivel no seu plano.")
+            raise HTTPException(status_code=403, detail="Voz nao disponivel no seu plano.")
         if len(data.texto) > rules["max_chars"]:
-            raise HTTPException(status_code=403, detail=f"Texto excede o limite de caracteres do seu plano.")
+            raise HTTPException(status_code=403, detail="Texto excede o limite de caracteres do seu plano.")
 
     voice_id = VOICES.get(data.tom, VOICES["calmo"])
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
     headers = {"xi-api-key": ELEVEN_API_KEY, "Content-Type": "application/json", "Accept": "audio/mpeg"}
-    payload = {"text": data.texto, "model_id": "eleven_multilingual_v2", "language_code": "pt"}
+    texto_preparado = prepare_text_for_tts(data.texto)
+    payload = {"text": texto_preparado, "model_id": "eleven_multilingual_v2", "language_code": "pt"}
 
     response = requests.post(url, json=payload, headers=headers)
     if response.status_code != 200:
@@ -797,7 +803,8 @@ async def generate_audio_with_music(
     voice_id = VOICES.get(tom, VOICES["calmo"])
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
     headers = {"xi-api-key": ELEVEN_API_KEY, "Content-Type": "application/json", "Accept": "audio/mpeg"}
-    voice_payload = {"text": texto, "model_id": "eleven_multilingual_v2", "language_code": "pt"}
+    texto_preparado = prepare_text_for_tts(texto)
+    voice_payload = {"text": texto_preparado, "model_id": "eleven_multilingual_v2", "language_code": "pt"}
 
     voice_response = requests.post(url, json=voice_payload, headers=headers)
     if voice_response.status_code != 200:
