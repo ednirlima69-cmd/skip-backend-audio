@@ -284,6 +284,7 @@ def send_email(to: str, subject: str, html: str):
 
 
 def prepare_text_for_tts(text: str) -> str:
+
     def convert_currency(match):
         value = match.group(0)
         value = value.replace("R$", "").replace("R$ ", "").strip()
@@ -299,19 +300,30 @@ def prepare_text_for_tts(text: str) -> str:
             return match.group(0)
 
     def convert_percentage(match):
-        value = match.group(1)
-        return f"{value} por cento"
+        return f"{match.group(1)} por cento"
 
-    def convert_number(match):
-        value = match.group(0).replace(".", "")
-        try:
-            return str(int(value))
-        except Exception:
-            return match.group(0)
+    def convert_decimal(match):
+        inteiro = match.group(1)
+        decimal = match.group(2)
+        return f"{inteiro} e {decimal}"
 
+    def convert_thousands(match):
+        return match.group(0).replace(".", "")
+
+    # Converte valores monetarios primeiro
     text = re.sub(r"R\$\s?[\d.,]+", convert_currency, text)
+
+    # Converte porcentagens
     text = re.sub(r"(\d+)%", convert_percentage, text)
-    text = re.sub(r"\d{1,3}(?:\.\d{3})+", convert_number, text)
+
+    # Converte numeros com ponto de milhar
+    text = re.sub(r"\d{1,3}(?:\.\d{3})+", convert_thousands, text)
+
+    # Converte decimais com virgula ex: 9,50 -> nove e cinquenta
+    text = re.sub(r"(\d+),(\d+)", convert_decimal, text)
+
+    # Remove virgulas soltas entre numeros
+    text = re.sub(r"(\d),(\d)", r"\1 \2", text)
 
     return text
 
