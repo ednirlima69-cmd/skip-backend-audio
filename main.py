@@ -332,22 +332,31 @@ def mix_audio(voice_bytes: bytes, music_bytes: bytes) -> bytes:
     voice = AudioSegment.from_mp3(io.BytesIO(voice_bytes))
     music = AudioSegment.from_file(io.BytesIO(music_bytes))
 
-    total_duration = len(voice) + 6000
+    # Total = intro 3s + voz + final 30s
+    total_duration = len(voice) + 33000
     if len(music) < total_duration:
         loops = total_duration // len(music) + 1
         music = music * loops
 
+    # Intro: musica em volume normal por 3 segundos
     music_intro = music[:3000].fade_in(500)
-    music_under_voice = music[3000:3000 + len(voice)] - 15
-    music_outro = music[3000 + len(voice):3000 + len(voice) + 4000]
-    music_outro = music_outro + 8
-    music_outro = music_outro.fade_out(3000)
 
+    # Durante a voz: musica bem baixa
+    music_under_voice = music[3000:3000 + len(voice)] - 15
+
+    # Final: musica volta ao volume normal por 30 segundos e fecha suavemente
+    music_outro = music[3000 + len(voice):3000 + len(voice) + 30000]
+    music_outro = music_outro + 8
+    music_outro = music_outro.fade_out(5000)
+
+    # Junta tudo
     background = music_intro + music_under_voice + music_outro
 
+    # Voz entra depois do intro de 3 segundos
     silence = AudioSegment.silent(duration=3000)
     voice_with_delay = silence + voice
 
+    # Mixagem final
     final = background.overlay(voice_with_delay)
 
     output = io.BytesIO()
