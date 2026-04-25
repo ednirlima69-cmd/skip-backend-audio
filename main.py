@@ -328,35 +328,51 @@ def prepare_text_for_tts(text: str) -> str:
     return text
 
 
-def mix_audio(voice_bytes: bytes, music_bytes: bytes) -> bytes:
+def mix_audio(voice_bytes: bytes, music_bytes: bytes, music_start_seconds: float = 0, music_offset_seconds: float = 3, music_volume: float = 70, mode: str = "auto") -> bytes:
     voice = AudioSegment.from_mp3(io.BytesIO(voice_bytes))
     music = AudioSegment.from_file(io.BytesIO(music_bytes))
 
-    # Total = intro 3s + voz + final 30s
-    total_duration = len(voice) + 33000
+    # Corta a musica a partir do ponto escolhido pelo usuario
+    music_start_ms = int(music_start_seconds * 1000)
+    music = music[music_start_ms:]
+
+    # Ajusta volume da musica (0-100 para dB)
+    volume_db = (music_volume / 100) * 20 - 20
+    music = music + volume_db
+
+    # Total necessario
+    offset_ms = int(music_offset_seconds * 1000)
+    total_duration = offset_ms + len(voice) + 30000
+
     if len(music) < total_duration:
         loops = total_duration // len(music) + 1
         music = music * loops
 
-    # Intro: musica em volume normal por 3 segundos
-    music_intro = music[:3000].fade_in(500)
+    if mode == "manual":
+        # Modo manual: musica entra no offset definido pelo usuario
+        music_intro = music[:offset_ms].fade_in(500)
+        music_under_voice = music[offset_ms:offset_ms + len(voice)] - 12
+        music_outro = music[offset_ms + len(voice):offset_ms + len(voice) + 30000]
+        music_outro = music_outro.fade_out(5000)
 
-    # Durante a voz: musica bem baixa
-    music_under_voice = music[3000:3000 + len(voice)] - 15
+        background = music_intro + music_under_voice + music_outro
 
-    # Final: musica volta ao volume normal por 30 segundos e fecha suavemente
-    music_outro = music[3000 + len(voice):3000 + len(voice) + 30000]
-    music_outro = music_outro + 8
-    music_outro = music_outro.fade_out(5000)
+        silence = AudioSegment.silent(duration=offset_ms)
+        voice_with_delay = silence + voice
 
-    # Junta tudo
-    background = music_intro + music_under_voice + music_outro
+    else:
+        # Modo automatico: intro 3s fixo
+        music_intro = music[:3000].fade_in(500)
+        music_under_voice = music[3000:3000 + len(voice)] - 15
+        music_outro = music[3000 + len(voice):3000 + len(voice) + 30000]
+        music_outro = music_outro + 8
+        music_outro = music_outro.fade_out(5000)
 
-    # Voz entra depois do intro de 3 segundos
-    silence = AudioSegment.silent(duration=3000)
-    voice_with_delay = silence + voice
+        background = music_intro + music_under_voice + music_outro
 
-    # Mixagem final
+        silence = AudioSegment.silent(duration=3000)
+        voice_with_delay = silence + voice
+
     final = background.overlay(voice_with_delay)
 
     output = io.BytesIO()
@@ -789,6 +805,10 @@ async def generate_audio_with_music(
     tom: str = Form("calmo"),
     project_name: str = Form("Sem titulo"),
     music_file: UploadFile = File(...),
+    music_start_seconds: float = Form(0),
+    music_offset_seconds: float = Form(3),
+    music_volume: float = Form(70),
+    mode: str = Form("auto"),
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     token = credentials.credentials
@@ -832,7 +852,14 @@ async def generate_audio_with_music(
         raise HTTPException(status_code=500, detail=voice_response.text)
 
     music_bytes = await music_file.read()
-    final_audio = mix_audio(voice_response.content, music_bytes)
+    final_audio = mix_audio(
+        voice_response.content,
+        music_bytes,
+        music_start_seconds=music_start_seconds,
+        music_offset_seconds=music_offset_seconds,
+        music_volume=music_volume,
+        mode=mode
+    )
 
     public_id = f"audio_music_{current_user['id']}_{uuid.uuid4().hex[:8]}"
     upload_result = cloudinary.uploader.upload(
