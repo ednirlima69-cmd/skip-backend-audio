@@ -14,6 +14,8 @@ import uuid
 import cloudinary
 import cloudinary.uploader
 import secrets
+import static_ffmpeg
+static_ffmpeg.add_paths()
 from pydub import AudioSegment
 import io
 import re
